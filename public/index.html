@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>AI Interview Console</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+
+<!-- ============ one door, two panels ============ -->
+<div id="gate" class="gate">
+  <div class="gate-card">
+    <div class="eyebrow">AI Interview Console</div>
+    <h1>Sign in</h1>
+    <p class="sub">Choose the panel you need.</p>
+
+    <div class="tabs" role="tablist">
+      <button class="tab on" id="tabAdmin" role="tab" aria-selected="true">Administrator</button>
+      <button class="tab" id="tabUser" role="tab" aria-selected="false">Candidate</button>
+    </div>
+
+    <div id="loginErr" class="err hide"></div>
+
+    <form id="adminForm">
+      <label class="field"><span>Username</span><input id="au" autocomplete="username" value="" required></label>
+      <label class="field"><span>Password</span><input id="ap" type="password" autocomplete="current-password" required></label>
+      <button class="btn wide" type="submit">Open admin panel</button>
+      <p class="hint" style="margin:12px 0 0;text-align:center">Manage candidates, transcripts and recordings.</p>
+    </form>
+
+    <form id="userForm" class="hide">
+      <label class="field"><span>Interview code or link</span><input id="ucode" placeholder="Paste the link from your invitation" required></label>
+      <label class="field"><span>Username</span><input id="uu" autocomplete="username" required></label>
+      <label class="field"><span>Password</span><input id="up" type="password" autocomplete="current-password" required></label>
+      <button class="btn go wide" type="submit">Open my interview</button>
+      <p class="hint" style="margin:12px 0 0;text-align:center">Your camera and microphone are needed. Use a laptop or desktop.</p>
+    </form>
+  </div>
+</div>
+
+<!-- ============ admin panel ============ -->
+<div id="app" class="hide">
+  <header class="topbar">
+    <div class="brand">
+      <b>Interview console</b>
+      <span class="eyebrow" id="aiState">checking</span>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" id="newBtn">Add candidate</button>
+      <button class="btn ghost" id="outBtn">Sign out</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="stats" id="stats"></div>
+    <div class="section-head">
+      <h2>Candidates</h2>
+      <button class="btn ghost sm" id="refreshBtn">Refresh</button>
+    </div>
+    <div id="listWrap"></div>
+  </main>
+</div>
+
+<!-- ============ add candidate ============ -->
+<div id="newBg" class="sheet-bg hide"></div>
+<aside id="newSheet" class="sheet hide" aria-label="Add candidate">
+  <div class="sheet-head">
+    <h2>Add candidate</h2>
+    <button class="btn ghost sm" data-close-new>Close</button>
+  </div>
+  <div class="sheet-body">
+    <form id="newForm">
+      <div class="card">
+        <h3>Candidate</h3>
+        <label class="field"><span>Full name</span><input name="name" required></label>
+        <label class="field"><span>Email</span><input name="email" type="email" required placeholder="candidate@example.com"></label>
+        <p class="hint" style="margin-top:-8px">The interview link is emailed here automatically when you create this candidate.</p>
+        <label class="field"><span>Position applied for</span><input name="role" required placeholder="e.g. Backend Developer (Node.js)"></label>
+        <label class="field"><span>Experience</span>
+          <select name="experience">
+            <option>Fresher</option><option>0-2 years</option><option selected>2-5 years</option>
+            <option>5-8 years</option><option>8+ years</option>
+          </select>
+        </label>
+      </div>
+      <div class="card">
+        <h3>Interview schedule</h3>
+        <p class="hint">Leave either blank for no restriction. The invitation link only works between these times.</p>
+        <label class="field"><span>Available from</span><input name="scheduleStart" type="date"></label>
+        <label class="field"><span>Available until</span><input name="scheduleEnd" type="date"></label>
+      </div>
+      <div class="card">
+        <h3>Resume</h3>
+        <label class="field"><span>Resume file</span><input type="file" name="resume" accept=".pdf,.doc,.docx,.txt,.md"></label>
+        <p class="hint">A .txt or .md file is read automatically for question generation. PDF/DOCX is stored for review only.</p>
+      </div>
+      <div id="newErr" class="err hide"></div>
+      <button class="btn go wide" type="submit">Create candidate and generate link</button>
+    </form>
+
+    <div id="newDone" class="card hide">
+      <h3>Invitation link</h3>
+      <p id="mailNote" style="font-size:14px;margin-top:0;font-weight:600"></p>
+      <div class="linkbox">
+        <input id="newLink" readonly>
+        <button class="btn sm" id="copyNew">Copy</button>
+      </div>
+      <p class="hint" style="margin-top:12px">Candidate sign-in username: <b class="mono" id="credUser"></b><br>Candidate sign-in password: <b class="mono" id="credPass"></b></p>
+      <button class="btn ghost wide" data-close-new style="margin-top:6px">Done</button>
+    </div>
+  </div>
+</aside>
+
+<!-- ============ candidate record ============ -->
+<div id="detailBg" class="sheet-bg hide"></div>
+<aside id="detailSheet" class="sheet hide" aria-label="Candidate record">
+  <div class="sheet-head">
+    <h2 id="detailName">Candidate</h2>
+    <button class="btn ghost sm" data-close-detail>Close</button>
+  </div>
+  <div class="sheet-body" id="detailBody"></div>
+</aside>
+
+<script src="/assets/dashboard.js"></script>
+</body>
+</html>

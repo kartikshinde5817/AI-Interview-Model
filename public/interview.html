@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Candidate interview</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="exam">
+
+<div id="topWarn" class="top-warn hide"></div>
+
+<!-- ---------------- sign in ---------------- -->
+<section id="gate" class="gate">
+  <form class="gate-card" id="loginForm">
+    <div class="eyebrow">Candidate panel</div>
+    <h1>Sign in to your interview</h1>
+    <p class="sub">Use the username and password from your invitation.</p>
+    <div id="loginErr" class="err hide"></div>
+    <label class="field"><span>Username</span><input id="u" autocomplete="username" required></label>
+    <label class="field"><span>Password</span><input id="p" type="password" autocomplete="current-password" required></label>
+    <button class="btn go wide" type="submit">Sign in</button>
+  </form>
+</section>
+
+<!-- ---------------- guidelines ---------------- -->
+<section id="guide" class="hide">
+  <div class="exam-wrap">
+    <div class="panel">
+      <div class="eyebrow">Before you begin</div>
+      <h1 id="greet">Interview guidelines</h1>
+      <p id="roleLine"></p>
+
+      <div class="plan-grid" id="planGrid"></div>
+
+      <h2>How the interview runs</h2>
+      <div class="rules">
+        <div class="rule"><i>01</i><span><b>Slot 1 — Interview.</b> <span id="s1Txt"></span> spoken questions about your resume and the position, asked one at a time by an AI voice, on its own <b id="totalMinTxt"></b> clock. Answer out loud — your speech is captured automatically. There is no typing.</span></div>
+        <div class="rule"><i>02</i><span><b>Slot 2 — Reasoning.</b> <span id="s2Txt"></span> questions, fully text-based with no voice: a short memory-tile game, then <span id="mixTxt"></span>, followed by 10 questions on the role you applied for.</span></div>
+        <div class="rule"><i>03</i><span>Each question also has its own time window. When it runs out the interview moves on by itself and you cannot return to that question. If Slot 1's clock runs out first, any remaining Slot 1 questions are skipped and Slot 2 begins.</span></div>
+        <div class="rule"><i>04</i><span>Finished early? Press <b>Next question</b> to submit and move on. In Slot 1 you can press <b>Clear answer</b> to re-record your answer before moving on.</span></div>
+        <div class="rule"><i>05</i><span>Questions are asked in order. There is no going back, and no editing an answer once submitted.</span></div>
+        <div class="rule"><i>06</i><span>Want to stop early? A <b>Submit interview</b> button is available throughout — it asks you to confirm before ending your attempt.</span></div>
+      </div>
+
+      <h2>Proctoring rules</h2>
+      <div class="rules">
+        <div class="rule"><i>01</i><span>Your camera and microphone stay on for the whole interview and the session is recorded for the hiring team.</span></div>
+        <div class="rule"><i>02</i><span>The interview runs in full screen. Leaving full screen ends it.</span></div>
+        <div class="rule"><i>03</i><span>Switching to another window, another tab or another application ends the interview immediately.</span></div>
+        <div class="rule"><i>04</i><span>Copy, paste and right-click are disabled. Do not use a second screen or a second device.</span></div>
+        <div class="rule"><i>05</i><span>If another person appears in your camera frame, an electronic device (phone, tablet, second screen) is seen in frame, or a second voice is heard, you get an on-screen warning and a photo is captured as evidence. After 3 such warnings for the same issue, the interview closes automatically.</span></div>
+        <div class="rule"><i>06</i><span>An ended interview cannot be restarted by you. Only the hiring team can issue a new link.</span></div>
+      </div>
+
+      <div class="banner">Read this before you press start: a single window switch ends the interview and your attempt is submitted as it stands.</div>
+
+      <button class="btn ghost sm" id="replayInstr" type="button" style="margin-top:16px">🔊 Replay instructions aloud</button>
+
+      <h2>Set up your camera and microphone</h2>
+      <p>Sit in a well-lit, quiet room with your face clearly visible. Close every other application before you continue.</p>
+      <video id="preview" class="preview" autoplay muted playsinline></video>
+      <div style="margin-top:14px">
+        <div class="check-row"><span class="dot" id="dotCam"></span><span id="camTxt">Camera not connected</span></div>
+        <div class="check-row"><span class="dot" id="dotMic"></span><span id="micTxt">Microphone not connected</span><span class="meter" style="margin-left:6px"><i id="micLevel"></i></span></div>
+        <div class="check-row"><span class="dot" id="dotRec"></span><span id="recTxt">Recorder not ready</span></div>
+      </div>
+      <div id="guideErr" class="banner hide"></div>
+      <div class="qfoot">
+        <button class="btn ghost" id="deviceBtn">Connect camera and microphone</button>
+      </div>
+
+      <!-- ---- step 2: identity verification ---- -->
+      <div id="verifyPanel" class="hide" style="margin-top:22px">
+        <h2>Identity verification</h2>
+        <p id="verifyInstr">Hold your ID card next to your face so both your face and the card are clearly visible, then capture your verification photo.</p>
+        <div class="verify-row">
+          <div class="verify-col">
+            <video id="verifyVideo" class="preview" autoplay muted playsinline></video>
+            <img id="shotPreview" class="preview hide" alt="Captured verification photo">
+            <canvas id="shotCanvas" class="hide"></canvas>
+          </div>
+          <div class="verify-col">
+            <div class="example-card">
+              <svg viewBox="0 0 200 150" width="100%" height="150" aria-hidden="true">
+                <rect x="0" y="0" width="200" height="150" rx="6" fill="#0d1117"/>
+                <circle cx="85" cy="55" r="28" fill="none" stroke="#6fd0b6" stroke-width="2.5"/>
+                <path d="M60 108 q25 -26 50 0" fill="none" stroke="#6fd0b6" stroke-width="2.5"/>
+                <g transform="translate(120,70) rotate(-8)">
+                  <rect x="0" y="0" width="56" height="36" rx="4" fill="none" stroke="#e0b445" stroke-width="2.5"/>
+                  <circle cx="14" cy="18" r="7" fill="none" stroke="#e0b445" stroke-width="2"/>
+                  <line x1="28" y1="10" x2="48" y2="10" stroke="#e0b445" stroke-width="2"/>
+                  <line x1="28" y1="18" x2="48" y2="18" stroke="#e0b445" stroke-width="2"/>
+                  <line x1="28" y1="26" x2="42" y2="26" stroke="#e0b445" stroke-width="2"/>
+                </g>
+              </svg>
+              <p class="note" style="margin:8px 0 0;text-align:center">Example: hold your ID card beside your face like this, both clearly visible.</p>
+            </div>
+          </div>
+        </div>
+        <div id="verifyErr" class="banner hide"></div>
+        <div class="qfoot">
+          <button class="btn ghost hide" id="retakeBtn" type="button">Retake photo</button>
+          <button class="btn go" id="captureBtn" type="button">Capture verification photo</button>
+        </div>
+      </div>
+
+      <!-- ---- step 3: mic test ---- -->
+      <div id="micTestPanel" class="hide" style="margin-top:22px">
+        <h2>Microphone check</h2>
+        <p>Read this sentence aloud, clearly:</p>
+        <div class="qtext" id="micSentence" style="font-size:17px"></div>
+        <div id="micTranscript" class="answer" style="white-space:pre-wrap;min-height:60px"></div>
+        <div id="micTestWarn" class="banner warn hide">Speech recognition is not available in this browser. You can still continue, but Slot 1 needs Chrome or Edge to capture your spoken answers.</div>
+        <div class="qfoot">
+          <span class="note" id="micTestNote">Listening for your voice…</span>
+          <button class="btn go" id="micTestContinue" disabled>Continue</button>
+        </div>
+      </div>
+
+      <div id="readyPanel" class="hide" style="margin-top:22px">
+        <div class="banner go">Verification complete. You're ready to begin.</div>
+        <div class="qfoot">
+          <button class="btn go" id="startBtn">Start interview</button>
+        </div>
+        <p class="note" style="margin-top:14px">Pressing start enters full screen, begins recording and starts the Slot 1 clock.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ---------------- exam ---------------- -->
+<section id="exam" class="hide">
+  <div class="hud">
+    <div class="hud-rail" id="rail"><i id="railFill" style="width:100%"></i></div>
+    <div class="hud-inner">
+      <video id="hudCam" autoplay muted playsinline></video>
+      <div class="hud-col">
+        <span class="hud-label">Recording</span>
+        <span class="hud-val" style="color:#ef6a58"><span class="rec-dot"></span><span id="recSize">live</span></span>
+      </div>
+      <div class="hud-col">
+        <span class="hud-label" id="slotLabel">Slot 1 · Interview</span>
+        <span class="hud-val" id="slotProgress">1 / 10</span>
+      </div>
+      <div class="spacer"></div>
+      <div class="hud-col" id="clockCol" style="align-items:flex-end">
+        <span class="hud-label" id="clockLabel">Slot 1 time remaining</span>
+        <span class="clock" id="clock">20:00</span>
+      </div>
+      <button class="btn ghost sm" id="submitEarlyBtn" type="button" style="margin-left:14px">Submit interview</button>
+    </div>
+  </div>
+
+  <div class="exam-wrap">
+    <div class="qcard">
+      <div class="qhead">
+        <span class="qnum" id="qNum">Question 1</span>
+        <span class="qtimer" id="qTimer">2:00 for this question</span>
+      </div>
+      <div class="qbar" id="qBar"><i id="qBarFill" style="width:100%"></i></div>
+      <div class="qtext" id="qText">Loading the first question…</div>
+
+      <div id="openArea" class="hide">
+        <div class="check-row"><span class="dot" id="dotListen"></span><span id="listenTxt">AI is asking the question…</span></div>
+        <div id="liveTranscript" class="answer" style="white-space:pre-wrap;overflow-y:auto"></div>
+        <div id="micWarn" class="banner warn hide">Speech recognition is not available in this browser. Use Chrome or Edge on a laptop or desktop to answer this interview.</div>
+        <div class="qfoot">
+          <span class="note">Speak clearly and naturally. The panel is looking for specifics, not perfect prose.</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn ghost" id="clearOpen" type="button">Clear answer</button>
+            <button class="btn go" id="nextOpen">Next question</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="mcqArea" class="hide">
+        <div class="opts" id="opts"></div>
+        <div class="qfoot">
+          <span class="note">Pick one option, then move on.</span>
+          <button class="btn go" id="nextMcq">Next question</button>
+        </div>
+      </div>
+
+      <div id="gameArea" class="hide">
+        <p class="note" id="gameNote">Watch the tiles light up in order…</p>
+        <div class="tiles" id="tiles"></div>
+        <div class="qfoot">
+          <button class="btn ghost" id="clearGame" type="button">Clear</button>
+          <button class="btn go" id="nextGame" disabled>Submit sequence</button>
+        </div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:16px">Stay in this window. Leaving it ends the interview.</p>
+  </div>
+</section>
+
+<!-- ---------------- end states ---------------- -->
+<section id="end" class="hide">
+  <div class="exam-wrap">
+    <div class="center-end">
+      <div class="mark" id="endMark">—</div>
+      <h1 id="endTitle"></h1>
+      <p id="endBody"></p>
+    </div>
+  </div>
+</section>
+
+<script src="/assets/interview.js"></script>
+</body>
+</html>
