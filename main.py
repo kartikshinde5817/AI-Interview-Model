@@ -15,6 +15,7 @@ single process on http://localhost:8000
 Set ANTHROPIC_API_KEY to have questions written and answers scored by Claude.
 Without it the platform runs on a built-in question bank with the same mix.
 """
+
 import base64
 import hashlib
 import hmac
@@ -98,6 +99,8 @@ CFG = {
     "smtp_user": env("SMTP_USER", ""),
     "smtp_pass": env("SMTP_PASS", ""),
     "smtp_from": env("SMTP_FROM", ""),
+    "resend_api_key": env("RESEND_API_KEY", ""),
+    "resend_from": env("RESEND_FROM", "AI Interview Console <onboarding@resend.dev>"),
 }
 
 for d in (DATA, UPLOADS, RECORDINGS, VERIFICATIONS, EVIDENCE):
@@ -246,14 +249,7 @@ def fmt_schedule(iso_str):
         return iso_str
 
 
-def send_invitation_email(c, base_url):
-    """Sent synchronously, right when the candidate profile is created, so the
-    admin knows immediately whether it actually went out. Returns (ok, message)."""
-    if not c.get("email"):
-        return False, "no email on file"
-    if not CFG["smtp_host"] or not CFG["smtp_user"] or not CFG["smtp_pass"]:
-        return False, "SMTP is not configured on the server (set SMTP_HOST / SMTP_USER / SMTP_PASS)"
-
+def build_invitation_content(c, base_url):
     link = f"{base_url}/i/{c['token']}"
     login_user = c.get("username") or CFG["candidate_user"]
     login_pass = c.get("password") or CFG["candidate_pass"]
@@ -299,9 +295,42 @@ Good luck!
   in a quiet, well-lit room, with about 40 minutes free.</p>
   <p>Good luck!</p>
 </div>"""
+    subject = f"Your interview invitation - {c['role']}"
+    return subject, text_body, html_body
 
+
+def send_via_resend(c, subject, text_body, html_body):
+    """HTTP-based send. Works on hosts (e.g. Railway) that block outbound SMTP ports,
+    since it's just an HTTPS POST like the Claude API calls."""
+    body = json.dumps({
+        "from": CFG["resend_from"],
+        "to": [c["email"]],
+        "subject": subject,
+        "text": text_body,
+        "html": html_body,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=body,
+        headers={
+            "content-type": "application/json",
+            "authorization": f"Bearer {CFG['resend_api_key']}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as res:
+            data = json.loads(res.read().decode())
+        return True, f"sent to {c['email']} via Resend (id {data.get('id', '?')})"
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        return False, f"Resend rejected the request ({exc.code}): {detail[:300]}"
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def send_via_smtp(c, subject, text_body, html_body):
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Your interview invitation - {c['role']}"
+    msg["Subject"] = subject
     msg["From"] = CFG["smtp_from"] or CFG["smtp_user"]
     msg["To"] = c["email"]
     msg.attach(MIMEText(text_body, "plain"))
@@ -321,6 +350,19 @@ Good luck!
         return True, f"sent to {c['email']}"
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
+
+
+def send_invitation_email(c, base_url):
+    """Sent synchronously, right when the candidate profile is created, so the
+    admin knows immediately whether it actually went out. Returns (ok, message)."""
+    if not c.get("email"):
+        return False, "no email on file"
+    subject, text_body, html_body = build_invitation_content(c, base_url)
+    if CFG["resend_api_key"]:
+        return send_via_resend(c, subject, text_body, html_body)
+    if CFG["smtp_host"] and CFG["smtp_user"] and CFG["smtp_pass"]:
+        return send_via_smtp(c, subject, text_body, html_body)
+    return False, "No email provider configured (set RESEND_API_KEY, or SMTP_HOST / SMTP_USER / SMTP_PASS)"
 
 
 def delete_candidate(cid):
