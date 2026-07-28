@@ -233,9 +233,12 @@ $('#detailBody').addEventListener('click', async (e) => {
       closeDetail();
     }
     if (e.target.id === 'resetBtn') {
-      if (!confirm('Clear this attempt and issue a new link? The transcript and scores are removed.')) return;
+      if (!confirm('Clear this attempt? The transcript and scores are removed. The same link, username and password will keep working.')) return;
       await api(`/api/admin/candidates/${id}/reset`, { method: 'POST' });
       showDetail(id);
+    }
+    if (e.target.id === 'editBtn') {
+      openEdit(CACHE.find((x) => x.id === id) || {});
     }
     if (e.target.id === 'copyDetail') {
       navigator.clipboard.writeText($('#detailLink').value);
@@ -277,6 +280,7 @@ function detailHtml(c) {
     </div>
     <div style="display:flex;gap:8px;margin-top:16px">
       <button class="btn ghost sm" id="resetBtn">Reset attempt</button>
+      <button class="btn ghost sm" id="editBtn">Edit profile</button>
       <button class="btn danger sm" id="delBtn">Delete candidate</button>
     </div>
   </div>`;
@@ -361,5 +365,51 @@ function detailHtml(c) {
 
   return overview + flags + evidence + report + recording + slot1 + slot2;
 }
+
+/* ---------------- edit profile ---------------- */
+
+let EDIT_ID = null;
+
+function openEdit(c) {
+  EDIT_ID = c.id;
+  const f = $('#editForm');
+  f.reset();
+  $('#editErr').classList.add('hide');
+  f.elements.name.value = c.name || '';
+  f.elements.email.value = c.email || '';
+  f.elements.role.value = c.role || '';
+  if (c.experience) f.elements.experience.value = c.experience;
+  f.elements.scheduleStart.value = c.scheduleStart ? c.scheduleStart.slice(0, 10) : '';
+  f.elements.scheduleEnd.value = c.scheduleEnd ? c.scheduleEnd.slice(0, 10) : '';
+  $('#editBg').classList.remove('hide');
+  $('#editSheet').classList.remove('hide');
+}
+const closeEdit = () => { $('#editBg').classList.add('hide'); $('#editSheet').classList.add('hide'); };
+$('#editBg').addEventListener('click', closeEdit);
+document.querySelectorAll('[data-close-edit]').forEach((b) => b.addEventListener('click', closeEdit));
+
+$('#editForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  const err = $('#editErr');
+  err.classList.add('hide');
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries(fd.entries());
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    await api(`/api/admin/candidates/${EDIT_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    closeEdit();
+    await load();
+    if (!$('#detailSheet').classList.contains('hide')) showDetail(EDIT_ID);
+  } catch (e2) {
+    err.textContent = e2.message; err.classList.remove('hide');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save changes';
+  }
+});
 
 boot();

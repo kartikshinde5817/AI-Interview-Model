@@ -88,7 +88,7 @@ CFG = {
     "n_interview": env_int("N_INTERVIEW", 15),
     "n_role": env_int("N_ROLE", 10),
     "logic_mix": {"math": 2, "grammar": 3, "logic": 3},
-    "n_game": env_int("N_GAME", 2),
+    "n_game": env_int("N_GAME", 4),
     "q_time_game": env_int("Q_TIME_GAME", 30),
     "game_tiles": 4,
     "strict_proctor": env("STRICT_PROCTOR", "true").lower() != "false",
@@ -1043,6 +1043,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.route("DELETE")
 
+    def do_PATCH(self):
+        self.route("PATCH")
+
     def route(self, method):
         path = unquote(urlsplit(self.path).path)
         try:
@@ -1163,6 +1166,37 @@ class Handler(BaseHTTPRequestHandler):
                 return
             return self.json({"ok": delete_candidate(m.group(1))})
 
+        if m and method == "PATCH":
+            if not self.require_admin():
+                return
+            c = find_candidate(m.group(1))
+            if not c:
+                return self.error_json(404, "Candidate not found.")
+            b = self.body_json()
+            name = (b.get("name") or "").strip()
+            email = (b.get("email") or "").strip()
+            role = (b.get("role") or "").strip()
+            if not name or not role:
+                return self.error_json(400, "Name and position are both required.")
+            if not email or "@" not in email:
+                return self.error_json(400, "A valid email address is required.")
+            schedule_start = (b.get("scheduleStart") or "").strip() or None
+            schedule_end = (b.get("scheduleEnd") or "").strip() or None
+            if schedule_start and schedule_end:
+                try:
+                    if datetime.fromisoformat(schedule_end) <= datetime.fromisoformat(schedule_start):
+                        return self.error_json(400, "The interview end date/time must be after the start.")
+                except ValueError:
+                    return self.error_json(400, "The interview schedule dates are not valid.")
+            c.update({
+                "name": name, "email": email, "role": role,
+                "experience": (b.get("experience") or "").strip(),
+                "notes": (b.get("notes") or "").strip(),
+                "scheduleStart": schedule_start, "scheduleEnd": schedule_end,
+            })
+            save()
+            return self.json({"ok": True, "candidate": public_view(c)})
+
         m = re.fullmatch(r"/api/admin/candidates/([0-9a-f]+)/reset", path)
         if m and method == "POST":
             if not self.require_admin():
@@ -1176,7 +1210,7 @@ class Handler(BaseHTTPRequestHandler):
             c.update({"status": "invited", "startedAt": None, "finishedAt": None, "slot1DeadlineAt": None,
                       "questions": [], "answers": [], "violations": [], "cursor": 0,
                       "verificationPhoto": None, "evidenceShots": [], "recording": None, "recordingBytes": 0,
-                      "report": None, "token": new_id(16)})
+                      "report": None})
             save()
             if old_photo:
                 try:
@@ -1253,7 +1287,7 @@ class Handler(BaseHTTPRequestHandler):
                 "slot1TimeSec": CFG["slot1_time_sec"],
                 "inSlot1": in_slot1(c),
                 "slot1RemainingSec": slot1_remaining_sec(c) if c["startedAt"] else CFG["slot1_time_sec"],
-                "plan": {"slot1": CFG["n_interview"], "slot2": 10 + CFG["n_role"],
+                "plan": {"slot1": CFG["n_interview"], "slot2": sum(CFG["logic_mix"].values()) + CFG["n_game"] + CFG["n_role"],
                          "qTimeInterview": CFG["q_time_interview"], "qTimeReasoning": CFG["q_time_reasoning"],
                          "mix": CFG["logic_mix"], "strict": CFG["strict_proctor"]},
                 "progress": progress(c),
