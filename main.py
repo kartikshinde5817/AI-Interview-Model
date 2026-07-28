@@ -15,7 +15,6 @@ single process on http://localhost:8000
 Set ANTHROPIC_API_KEY to have questions written and answers scored by Claude.
 Without it the platform runs on a built-in question bank with the same mix.
 """
-
 import base64
 import hashlib
 import hmac
@@ -27,6 +26,7 @@ import re
 import secrets
 import shutil
 import smtplib
+import socket
 import threading
 import time
 import urllib.error
@@ -35,6 +35,19 @@ from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Some hosts (e.g. Railway) resolve outbound hostnames to IPv6 addresses but
+# have no IPv6 egress route, which fails raw-socket protocols like SMTP with
+# "Network is unreachable" while HTTPS keeps working. Force IPv4 resolution
+# process-wide so smtplib (and everything else) connects over IPv4 instead.
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+
+socket.getaddrinfo = _ipv4_only_getaddrinfo
 from urllib.parse import urlsplit, unquote, parse_qs
 
 BASE = os.path.dirname(os.path.abspath(__file__))
