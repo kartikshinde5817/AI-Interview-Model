@@ -35,6 +35,7 @@ import urllib.request
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import parseaddr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Some hosts (e.g. Railway) resolve outbound hostnames to IPv6 addresses but
@@ -101,6 +102,8 @@ CFG = {
     "smtp_from": env("SMTP_FROM", ""),
     "resend_api_key": env("RESEND_API_KEY", ""),
     "resend_from": env("RESEND_FROM", "AI Interview Console <onboarding@resend.dev>"),
+    "brevo_api_key": env("BREVO_API_KEY", ""),
+    "brevo_from": env("BREVO_FROM", ""),
 }
 
 for d in (DATA, UPLOADS, RECORDINGS, VERIFICATIONS, EVIDENCE):
@@ -331,6 +334,40 @@ def send_via_resend(c, subject, text_body, html_body):
         return False, str(exc)
 
 
+def send_via_brevo(c, subject, text_body, html_body):
+    """HTTP-based send, like send_via_resend. Brevo will send from a single
+    sender address verified by clicking a link in that mailbox, so it needs no
+    DNS records - the option to reach for when you cannot edit the domain's zone."""
+    name, addr = parseaddr(CFG["brevo_from"])
+    if not addr:
+        return False, "BREVO_FROM is missing or malformed (expected: Name <you@example.com>)"
+    body = json.dumps({
+        "sender": {"name": name or addr, "email": addr},
+        "to": [{"email": c["email"], "name": c["name"] or c["email"]}],
+        "subject": subject,
+        "textContent": text_body,
+        "htmlContent": html_body,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=body,
+        headers={
+            "content-type": "application/json",
+            "accept": "application/json",
+            "api-key": CFG["brevo_api_key"],
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as res:
+            data = json.loads(res.read().decode())
+        return True, f"sent to {c['email']} via Brevo (id {data.get('messageId', '?')})"
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        return False, f"Brevo rejected the request ({exc.code}): {detail[:300]}"
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
 def send_via_smtp(c, subject, text_body, html_body):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -361,11 +398,14 @@ def send_invitation_email(c, base_url):
     if not c.get("email"):
         return False, "no email on file"
     subject, text_body, html_body = build_invitation_content(c, base_url)
+    if CFG["brevo_api_key"]:
+        return send_via_brevo(c, subject, text_body, html_body)
     if CFG["resend_api_key"]:
         return send_via_resend(c, subject, text_body, html_body)
     if CFG["smtp_host"] and CFG["smtp_user"] and CFG["smtp_pass"]:
         return send_via_smtp(c, subject, text_body, html_body)
-    return False, "No email provider configured (set RESEND_API_KEY, or SMTP_HOST / SMTP_USER / SMTP_PASS)"
+    return False, ("No email provider configured "
+                   "(set BREVO_API_KEY, or RESEND_API_KEY, or SMTP_HOST / SMTP_USER / SMTP_PASS)")
 
 
 def delete_candidate(cid):
