@@ -315,6 +315,9 @@ def send_via_resend(c, subject, text_body, html_body):
         headers={
             "content-type": "application/json",
             "authorization": f"Bearer {CFG['resend_api_key']}",
+            # Resend sits behind Cloudflare, which rejects the default
+            # "Python-urllib/x.y" agent with a 403 (error code 1010).
+            "user-agent": "InterviewConsole/1.0",
         },
     )
     try:
