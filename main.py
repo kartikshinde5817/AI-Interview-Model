@@ -27,6 +27,7 @@ import re
 import secrets
 import shutil
 import smtplib
+import socket
 import threading
 import time
 import urllib.error
@@ -34,7 +35,21 @@ import urllib.request
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import parseaddr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Some hosts (e.g. Railway) resolve outbound hostnames to IPv6 addresses but
+# have no IPv6 egress route, which fails raw-socket protocols like SMTP with
+# "Network is unreachable" while HTTPS keeps working. Force IPv4 resolution
+# process-wide so smtplib (and everything else) connects over IPv4 instead.
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+
+socket.getaddrinfo = _ipv4_only_getaddrinfo
 from urllib.parse import urlsplit, unquote, parse_qs
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -86,6 +101,10 @@ CFG = {
     "smtp_user": env("SMTP_USER", ""),
     "smtp_pass": env("SMTP_PASS", ""),
     "smtp_from": env("SMTP_FROM", ""),
+    "resend_api_key": env("RESEND_API_KEY", ""),
+    "resend_from": env("RESEND_FROM", "AI Interview Console <onboarding@resend.dev>"),
+    "brevo_api_key": env("BREVO_API_KEY", ""),
+    "brevo_from": env("BREVO_FROM", ""),
 }
 
 for d in (DATA, UPLOADS, RECORDINGS, VERIFICATIONS, EVIDENCE):
@@ -234,14 +253,7 @@ def fmt_schedule(iso_str):
         return iso_str
 
 
-def send_invitation_email(c, base_url):
-    """Sent synchronously, right when the candidate profile is created, so the
-    admin knows immediately whether it actually went out. Returns (ok, message)."""
-    if not c.get("email"):
-        return False, "no email on file"
-    if not CFG["smtp_host"] or not CFG["smtp_user"] or not CFG["smtp_pass"]:
-        return False, "SMTP is not configured on the server (set SMTP_HOST / SMTP_USER / SMTP_PASS)"
-
+def build_invitation_content(c, base_url):
     link = f"{base_url}/i/{c['token']}"
     login_user = c.get("username") or CFG["candidate_user"]
     login_pass = c.get("password") or CFG["candidate_pass"]
@@ -287,9 +299,79 @@ Good luck!
   in a quiet, well-lit room, with about 40 minutes free.</p>
   <p>Good luck!</p>
 </div>"""
+    subject = f"Your interview invitation - {c['role']}"
+    return subject, text_body, html_body
 
+
+def send_via_resend(c, subject, text_body, html_body):
+    """HTTP-based send. Works on hosts (e.g. Railway) that block outbound SMTP ports,
+    since it's just an HTTPS POST like the Claude API calls."""
+    body = json.dumps({
+        "from": CFG["resend_from"],
+        "to": [c["email"]],
+        "subject": subject,
+        "text": text_body,
+        "html": html_body,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=body,
+        headers={
+            "content-type": "application/json",
+            "authorization": f"Bearer {CFG['resend_api_key']}",
+            # Resend sits behind Cloudflare, which rejects the default
+            # "Python-urllib/x.y" agent with a 403 (error code 1010).
+            "user-agent": "InterviewConsole/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as res:
+            data = json.loads(res.read().decode())
+        return True, f"sent to {c['email']} via Resend (id {data.get('id', '?')})"
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        return False, f"Resend rejected the request ({exc.code}): {detail[:300]}"
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def send_via_brevo(c, subject, text_body, html_body):
+    """HTTP-based send, like send_via_resend. Brevo will send from a single
+    sender address verified by clicking a link in that mailbox, so it needs no
+    DNS records - the option to reach for when you cannot edit the domain's zone."""
+    name, addr = parseaddr(CFG["brevo_from"])
+    if not addr:
+        return False, "BREVO_FROM is missing or malformed (expected: Name <you@example.com>)"
+    body = json.dumps({
+        "sender": {"name": name or addr, "email": addr},
+        "to": [{"email": c["email"], "name": c["name"] or c["email"]}],
+        "subject": subject,
+        "textContent": text_body,
+        "htmlContent": html_body,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=body,
+        headers={
+            "content-type": "application/json",
+            "accept": "application/json",
+            "api-key": CFG["brevo_api_key"],
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as res:
+            data = json.loads(res.read().decode())
+        return True, f"sent to {c['email']} via Brevo (id {data.get('messageId', '?')})"
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        return False, f"Brevo rejected the request ({exc.code}): {detail[:300]}"
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def send_via_smtp(c, subject, text_body, html_body):
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Your interview invitation - {c['role']}"
+    msg["Subject"] = subject
     msg["From"] = CFG["smtp_from"] or CFG["smtp_user"]
     msg["To"] = c["email"]
     msg.attach(MIMEText(text_body, "plain"))
@@ -309,6 +391,22 @@ Good luck!
         return True, f"sent to {c['email']}"
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
+
+
+def send_invitation_email(c, base_url):
+    """Sent synchronously, right when the candidate profile is created, so the
+    admin knows immediately whether it actually went out. Returns (ok, message)."""
+    if not c.get("email"):
+        return False, "no email on file"
+    subject, text_body, html_body = build_invitation_content(c, base_url)
+    if CFG["brevo_api_key"]:
+        return send_via_brevo(c, subject, text_body, html_body)
+    if CFG["resend_api_key"]:
+        return send_via_resend(c, subject, text_body, html_body)
+    if CFG["smtp_host"] and CFG["smtp_user"] and CFG["smtp_pass"]:
+        return send_via_smtp(c, subject, text_body, html_body)
+    return False, ("No email provider configured "
+                   "(set BREVO_API_KEY, or RESEND_API_KEY, or SMTP_HOST / SMTP_USER / SMTP_PASS)")
 
 
 def delete_candidate(cid):
@@ -1023,6 +1121,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.route("DELETE")
 
+    def do_PATCH(self):
+        self.route("PATCH")
+
     def route(self, method):
         path = unquote(urlsplit(self.path).path)
         try:
@@ -1142,6 +1243,37 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_admin():
                 return
             return self.json({"ok": delete_candidate(m.group(1))})
+
+        if m and method == "PATCH":
+            if not self.require_admin():
+                return
+            c = find_candidate(m.group(1))
+            if not c:
+                return self.error_json(404, "Candidate not found.")
+            b = self.body_json()
+            name = (b.get("name") or "").strip()
+            email = (b.get("email") or "").strip()
+            role = (b.get("role") or "").strip()
+            if not name or not role:
+                return self.error_json(400, "Name and position are both required.")
+            if not email or "@" not in email:
+                return self.error_json(400, "A valid email address is required.")
+            schedule_start = (b.get("scheduleStart") or "").strip() or None
+            schedule_end = (b.get("scheduleEnd") or "").strip() or None
+            if schedule_start and schedule_end:
+                try:
+                    if datetime.fromisoformat(schedule_end) <= datetime.fromisoformat(schedule_start):
+                        return self.error_json(400, "The interview end date/time must be after the start.")
+                except ValueError:
+                    return self.error_json(400, "The interview schedule dates are not valid.")
+            c.update({
+                "name": name, "email": email, "role": role,
+                "experience": (b.get("experience") or "").strip(),
+                "notes": (b.get("notes") or "").strip(),
+                "scheduleStart": schedule_start, "scheduleEnd": schedule_end,
+            })
+            save()
+            return self.json({"ok": True, "candidate": public_view(c)})
 
         m = re.fullmatch(r"/api/admin/candidates/([0-9a-f]+)/reset", path)
         if m and method == "POST":

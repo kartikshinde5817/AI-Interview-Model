@@ -123,6 +123,39 @@
   <div class="sheet-body" id="detailBody"></div>
 </aside>
 
+<!-- ============ edit candidate ============ -->
+<div id="editBg" class="sheet-bg hide"></div>
+<aside id="editSheet" class="sheet hide" aria-label="Edit candidate">
+  <div class="sheet-head">
+    <h2>Edit profile</h2>
+    <button class="btn ghost sm" data-close-edit>Close</button>
+  </div>
+  <div class="sheet-body">
+    <form id="editForm">
+      <div class="card">
+        <h3>Candidate</h3>
+        <label class="field"><span>Full name</span><input name="name" required></label>
+        <label class="field"><span>Email</span><input name="email" type="email" required placeholder="candidate@example.com"></label>
+        <label class="field"><span>Position applied for</span><input name="role" required placeholder="e.g. Backend Developer (Node.js)"></label>
+        <label class="field"><span>Experience</span>
+          <select name="experience">
+            <option>Fresher</option><option>0-2 years</option><option>2-5 years</option>
+            <option>5-8 years</option><option>8+ years</option>
+          </select>
+        </label>
+      </div>
+      <div class="card">
+        <h3>Interview schedule</h3>
+        <p class="hint">Leave either blank for no restriction. The invitation link only works between these times.</p>
+        <label class="field"><span>Available from</span><input name="scheduleStart" type="date"></label>
+        <label class="field"><span>Available until</span><input name="scheduleEnd" type="date"></label>
+      </div>
+      <div id="editErr" class="err hide"></div>
+      <button class="btn go wide" type="submit">Save changes</button>
+    </form>
+  </div>
+</aside>
+
 <script src="/assets/dashboard.js"></script>
 </body>
 </html>
