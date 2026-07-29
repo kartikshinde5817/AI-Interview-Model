@@ -343,10 +343,14 @@ function detailHtml(c) {
       if (q.type === 'game') {
         const picked = a && a.sequence ? a.sequence.join(', ') : null;
         const ok = a && a.correct;
+        const isReorder = q.gameKind === 'reorder';
+        const target = isReorder ? q.answerOrder : q.sequence;
+        const targetLabel = isReorder ? 'Correct click order' : 'Target sequence';
+        const extra = isReorder ? ` · tile numbers shown: [${esc((q.layout || []).join(', '))}]` : '';
         return `<div class="qa">
-          <div class="q"><i>Q${q.n} · ${esc(q.category)}</i>${esc(q.text)}</div>
+          <div class="q"><i>Q${q.n} · ${esc(q.category)} · ${isReorder ? 'number order game' : 'memory game'}</i>${esc(q.text)}</div>
           <div class="a">${picked ? `${ok ? '<span class="tag-ok">Correct</span>' : '<span class="tag-bad">Incorrect</span>'} — clicked [${esc(picked)}]` : '<span style="color:var(--graphite)">No answer recorded.</span>'}</div>
-          <div class="meta">Target sequence: [${esc(q.sequence.join(', '))}]${a ? ` · ${a.timeSpentSec}s used` : ''}</div>
+          <div class="meta">${targetLabel}: [${esc((target || []).join(', '))}]${extra}${a ? ` · ${a.timeSpentSec}s used` : ''}</div>
         </div>`;
       }
       const chosen = a && a.choice != null ? q.options[a.choice] : null;

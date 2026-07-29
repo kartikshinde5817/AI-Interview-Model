@@ -71,8 +71,9 @@ CFG = {
     "q_time_interview": env_int("Q_TIME_INTERVIEW", 120),
     "q_time_reasoning": env_int("Q_TIME_REASONING", 45),
     "n_interview": env_int("N_INTERVIEW", 15),
-    "n_role": env_int("N_ROLE", 10),
-    "logic_mix": {"math": 2, "grammar": 3, "logic": 3},
+    "n_math": env_int("N_MATH", 3),
+    "n_analytical": env_int("N_ANALYTICAL", 4),
+    "n_puzzle": env_int("N_PUZZLE", 3),
     "n_game": env_int("N_GAME", 2),
     "q_time_game": env_int("Q_TIME_GAME", 30),
     "game_tiles": 4,
@@ -397,72 +398,37 @@ BANK = {
         {"text": "A 120 m long train runs at 72 km/h. How long does it take to pass a stationary pole?",
          "options": ["4 s", "6 s", "8 s", "10 s"], "answerIndex": 1},
     ],
-    "grammar": [
-        {"text": "Choose the correct sentence.",
-         "options": ["Neither of the answers are correct.", "Neither of the answers is correct.",
-                     "Neither of the answer are correct.", "Neither of answers is correct."], "answerIndex": 1},
-        {"text": "She has been working here ____ 2019.",
-         "options": ["from", "for", "since", "during"], "answerIndex": 2},
-        {"text": "If I ____ you, I would apply for the role.",
-         "options": ["am", "was", "were", "will be"], "answerIndex": 2},
-        {"text": 'Choose the correct passive form of: "They will announce the results tomorrow."',
-         "options": ["The results will announce tomorrow.", "The results will be announced tomorrow.",
-                     "The results are announced tomorrow.", "The results would be announced tomorrow."], "answerIndex": 1},
-        {"text": "He is one of those employees who ____ always on time.",
-         "options": ["is", "are", "was", "has been"], "answerIndex": 1},
-        {"text": "Choose the correctly punctuated sentence.",
-         "options": ['The manager said, "Send the report by Friday."', 'The manager said "Send the report by Friday".',
-                     "The manager said, Send the report by Friday.", 'The manager said; "Send the report by Friday."'],
-         "answerIndex": 0},
+    "analytical": [
+        {"text": "Find the missing number in the pattern: 4, 9, 16, 25, ?, 49",
+         "options": ["30", "36", "40", "42"], "answerIndex": 1},
+        {"text": "Which figure completes the sequence: a shape rotates 90 degrees clockwise each step - square, then diamond, then square again, then?",
+         "options": ["Diamond", "Triangle", "Square", "Circle"], "answerIndex": 0},
+        {"text": "Find the next term: 3, 6, 11, 18, 27, ?",
+         "options": ["36", "38", "40", "44"], "answerIndex": 1},
+        {"text": "In a group of 5 people, X sits immediately left of Y, Y sits immediately left of Z, and Z sits immediately left of X. What kind of seating arrangement is this?",
+         "options": ["A straight line", "A circular arrangement", "Impossible to determine", "Two separate rows"], "answerIndex": 1},
+        {"text": "Three of the following four pairs are alike in a certain way, one is not. Which one does not belong: (2,8), (3,27), (4,64), (5,20)?",
+         "options": ["(2,8)", "(3,27)", "(4,64)", "(5,20)"], "answerIndex": 3},
+        {"text": "A cube is painted on all six faces and then cut into 27 identical smaller cubes. How many small cubes have exactly two painted faces?",
+         "options": ["8", "12", "6", "4"], "answerIndex": 1},
     ],
-    "logic": [
-        {"text": "A is taller than B. C is shorter than B. D is taller than A. Who is the tallest?",
-         "options": ["A", "B", "C", "D"], "answerIndex": 3},
-        {"text": "In a code language, CAT is written as DBU. How is DOG written?",
-         "options": ["EPH", "EPG", "DPH", "FQI"], "answerIndex": 0},
-        {"text": "Find the next letter: A, C, F, J, ?", "options": ["M", "N", "O", "P"], "answerIndex": 2},
-        {"text": "Which one does not belong: 121, 144, 169, 180?",
-         "options": ["121", "144", "169", "180"], "answerIndex": 3},
-        {"text": "All engineers are problem solvers. Ravi is an engineer. Which conclusion follows?",
-         "options": ["Ravi is a problem solver.", "All problem solvers are engineers.",
-                     "Ravi is not a problem solver.", "No conclusion follows."], "answerIndex": 0},
-        {"text": "Statements: All roses are flowers. Some flowers fade quickly. Which follows?",
-         "options": ["All roses fade quickly.", "Some roses fade quickly.",
-                     "No rose fades quickly.", "Neither conclusion definitely follows."], "answerIndex": 3},
-    ],
-    "role": [
-        {"text": "Two tasks are due at the same hour: one blocks three teammates, the other is a solo deliverable of equal size. What is the most reasonable first action?",
-         "options": ["Finish the solo task first, it is fully in your control", "Start the blocking task and tell the teammates your ETA",
-                     "Ask your manager to decide", "Work on both in parallel"], "answerIndex": 1},
-        {"text": "You discover a mistake in work you already delivered to a client. What is the best response?",
-         "options": ["Wait to see whether the client notices", "Fix it quietly and say nothing",
-                     "Tell the client with the impact and your fix, then correct it", "Escalate to your manager and take no other action"],
-         "answerIndex": 2},
-        {"text": "A stakeholder asks for a deadline you believe is not achievable. The strongest reply is to:",
-         "options": ["Agree and hope for the best", "Refuse without an alternative",
-                     "Give a scoped alternative and state what would be needed for the original date", "Delay answering until closer to the date"],
-         "answerIndex": 2},
-        {"text": "Which statement best describes a good measure of success for a project?",
-         "options": ["It was delivered on the planned date", "The team worked a lot of hours",
-                     "It moved an agreed outcome metric", "The documentation is long"], "answerIndex": 2},
-        {"text": "You inherit work you do not fully understand. The most effective first step is to:",
-         "options": ["Rewrite it in your own style", "Map how it currently works and why, then change one thing at a time",
-                     "Leave it untouched permanently", "Ask for the task to be reassigned"], "answerIndex": 1},
-        {"text": "A teammate gives you critical feedback in a review. The most professional response is to:",
-         "options": ["Defend each point immediately", "Ask clarifying questions and confirm the change you will make",
-                     "Accept silently and change nothing", "Raise it with their manager"], "answerIndex": 1},
-        {"text": "Which is the strongest evidence that you understand a customer problem?",
-         "options": ["You can restate it in the customer's own terms and name the cost of it", "You have a long feature list",
-                     "You have met the customer once", "You have read a competitor's website"], "answerIndex": 0},
-        {"text": "When handing over ownership of your work, the most important thing to provide is:",
-         "options": ["Your personal notes file", "Context on decisions, current known issues, and how to run it",
-                     "A list of everyone you worked with", "A summary of hours spent"], "answerIndex": 1},
-        {"text": "You are asked for a status update on work that has slipped. You should lead with:",
-         "options": ["The reasons for the delay", "The new expected date and what changes because of it",
-                     "An apology", "A list of blockers from other teams"], "answerIndex": 1},
-        {"text": "Which practice most reduces repeated mistakes on a team?",
-         "options": ["Adding more review meetings", "Writing down what happened and changing one process because of it",
-                     "Assigning individual blame", "Increasing individual workload"], "answerIndex": 1},
+    "puzzle": [
+        {"text": "A farmer has to ferry a fox, a goose, and a bag of grain across a river one at a time, and cannot leave the fox alone with the goose, or the goose alone with the grain. What should he take across first?",
+         "options": ["The fox", "The goose", "The grain", "Any of them, order does not matter"], "answerIndex": 1},
+        {"text": "You have two ropes, each of which burns unevenly in exactly 60 minutes when lit from one end. Using only these ropes and a lighter, how do you measure exactly 45 minutes?",
+         "options": ["Light one rope at both ends", "Light one rope at one end, then the other at both ends after 15 minutes",
+                     "Light one rope at both ends and the other at one end at the same time",
+                     "It cannot be done with only two ropes"], "answerIndex": 2},
+        {"text": "A man is looking at a photo. Someone asks whose photo it is. He replies, \"Brothers and sisters I have none, but this man's father is my father's son.\" Whose photo is it?",
+         "options": ["His own son", "His father", "Himself", "His brother"], "answerIndex": 0},
+        {"text": "You have 8 identical-looking balls, one of which is slightly heavier. Using a balance scale, what is the minimum number of weighings needed to guarantee finding the heavier ball?",
+         "options": ["1", "2", "3", "4"], "answerIndex": 1},
+        {"text": "Three switches outside a room control one bulb inside. You may flip switches as much as you like, but may only enter the room once. How do you determine which switch controls the bulb?",
+         "options": ["It is impossible with only one entry", "Turn on one switch, wait, turn it off, turn on a second, then enter and check the bulb's state and warmth",
+                     "Turn on all three switches at once and enter immediately",
+                     "Flip each switch once in sequence while standing outside"], "answerIndex": 1},
+        {"text": "A clock's hour and minute hands overlap at 12:00. Approximately how many minutes after 3:00 do the hands next overlap?",
+         "options": ["About 15 minutes", "About 16.4 minutes", "About 20 minutes", "About 12 minutes"], "answerIndex": 1},
     ],
 }
 
@@ -488,27 +454,57 @@ def fallback_interview(c):
     ][: CFG["n_interview"]]
 
 
-def make_game_question(round_n):
+def make_memory_game_question(round_n):
     """A real, playable memory-sequence mini-game rather than a trivia question about games."""
     tiles = CFG["game_tiles"]
     seq_len = 3 + round_n
     return {
-        "type": "game", "category": "gaming",
-        "text": f"Round {round_n}: watch the sequence of tiles light up, then repeat it back in the same order.",
+        "type": "game", "category": "gaming", "gameKind": "memory",
+        "text": f"Memory game - round {round_n}: watch the sequence of tiles light up, then repeat it back in the same order.",
         "tiles": tiles,
         "sequence": [random.randrange(tiles) for _ in range(seq_len)],
         "timeLimit": CFG["q_time_game"],
     }
 
 
-def fallback_reasoning():
-    mix = CFG["logic_mix"]
-    part_a = []
-    for cat, n in mix.items():
-        for q in random.sample(BANK[cat], n):
-            part_a.append(dict(q, category=cat))
-    part_b = [dict(q, category="role") for q in random.sample(BANK["role"], min(CFG["n_role"], len(BANK["role"])))]
-    return part_a, part_b
+def make_reorder_game_question(round_n):
+    """A second, distinct mini-game: click the numbered tiles back in ascending order."""
+    tiles = CFG["game_tiles"] + 1
+    layout = list(range(1, tiles + 1))
+    random.shuffle(layout)
+    answer_order = sorted(range(tiles), key=lambda i: layout[i])
+    return {
+        "type": "game", "category": "gaming", "gameKind": "reorder",
+        "text": f"Number order game - round {round_n}: click the tiles in ascending numeric order, smallest first.",
+        "tiles": tiles,
+        "layout": layout,
+        "answerOrder": answer_order,
+        "timeLimit": CFG["q_time_game"],
+    }
+
+
+def make_game_rounds():
+    """First n_game rounds are one mini-game, the next n_game rounds are a different one -
+    grouped and never interleaved, so each pair is clearly its own game."""
+    n = CFG["n_game"]
+    memory = [make_memory_game_question(i + 1) for i in range(n)]
+    reorder = [make_reorder_game_question(i + 1) for i in range(n)]
+    return memory + reorder
+
+
+def fallback_analytical():
+    n = min(CFG["n_analytical"], len(BANK["analytical"]))
+    return [dict(q, category="analytical") for q in random.sample(BANK["analytical"], n)]
+
+
+def fallback_math():
+    n = min(CFG["n_math"], len(BANK["math"]))
+    return [dict(q, category="math") for q in random.sample(BANK["math"], n)]
+
+
+def fallback_puzzle():
+    n = min(CFG["n_puzzle"], len(BANK["puzzle"]))
+    return [dict(q, category="puzzle") for q in random.sample(BANK["puzzle"], n)]
 
 
 # --------------------------------------------------------------------------- #
@@ -594,20 +590,12 @@ Return JSON: {{"questions":[{{"text":"...","focus":"short tag such as resume, ed
     return [{"text": str(q["text"]).strip(), "focus": q.get("focus", "interview")} for q in items[:n]]
 
 
-def ai_reasoning_questions(c):
-    m = CFG["logic_mix"]
-    n_a = sum(m.values())
+def ai_math_questions(c):
+    n = CFG["n_math"]
     user = f"""{candidate_brief(c)}
 
-Write {n_a + CFG['n_role']} multiple-choice assessment questions, each with exactly 4 options and exactly one correct option.
-
-Part A - general reasoning ({n_a} questions, in this order):
-- {m['math']} quantitative aptitude questions (percentages, averages, ratios, series, speed and distance)
-- {m['grammar']} English grammar questions (agreement, tense, voice, punctuation)
-- {m['logic']} logical reasoning questions (syllogisms, coding-decoding, sequences, ordering)
-
-Part B - role knowledge ({CFG['n_role']} questions):
-- {CFG['n_role']} questions on the practical knowledge a competent {c['role']} is expected to have. Pull the subject matter from the tools and skills on the resume where possible. Mix difficulty: 3 easy, 5 moderate, 2 hard.
+Write {n} quantitative aptitude multiple-choice questions (percentages, averages, ratios, series, speed and
+distance), each with exactly 4 options and exactly one correct option.
 
 Rules:
 - Every question must be objectively answerable and self-contained.
@@ -615,26 +603,100 @@ Rules:
 - Keep each question under 45 words.
 
 Return JSON:
-{{"partA":[{{"category":"math|grammar|logic","text":"...","options":["a","b","c","d"],"answerIndex":0,"explanation":"one line"}}],
- "partB":[{{"category":"role","text":"...","options":["a","b","c","d"],"answerIndex":0,"explanation":"one line"}}]}}"""
-    out = parse_json(call_claude(SYSTEM_WRITER, user, 6000))
-    if not out or "partA" not in out or "partB" not in out:
-        raise RuntimeError("reasoning generation returned nothing usable")
+{{"questions":[{{"text":"...","options":["a","b","c","d"],"answerIndex":0,"explanation":"one line"}}]}}"""
+    out = parse_json(call_claude(SYSTEM_WRITER, user, 3000))
+    items = (out or {}).get("questions")
+    if not items:
+        raise RuntimeError("math generation returned nothing usable")
 
-    def clean(q, default_cat):
+    def clean(q):
         return {
             "text": str(q["text"]).strip(),
             "options": [str(o) for o in q.get("options", [])][:4],
             "answerIndex": int(q.get("answerIndex", 0)),
-            "category": q.get("category", default_cat),
+            "category": "math",
             "explanation": q.get("explanation", ""),
         }
 
-    a = [q for q in (clean(x, "logic") for x in out["partA"]) if len(q["options"]) == 4][:n_a]
-    b = [q for q in (clean(x, "role") for x in out["partB"]) if len(q["options"]) == 4][:CFG["n_role"]]
-    if len(a) < n_a or len(b) < CFG["n_role"]:
-        raise RuntimeError("reasoning generation incomplete")
-    return a, b
+    out_qs = [q for q in (clean(x) for x in items) if len(q["options"]) == 4][:n]
+    if len(out_qs) < n:
+        raise RuntimeError("math generation incomplete")
+    return out_qs
+
+
+def ai_analytical_questions(c):
+    n = CFG["n_analytical"]
+    user = f"""{candidate_brief(c)}
+
+Write {n} multiple-choice analytical ability questions, each with exactly 4 options and exactly one correct option.
+Cover a mix of: pattern recognition, logical reasoning, number/letter sequences, and general analytical thinking
+(e.g. spatial or figural patterns, series completion, odd-one-out, arrangement puzzles). Do not write quantitative
+aptitude, grammar, or role-knowledge questions - this set is purely analytical ability.
+
+Rules:
+- Every question must be objectively answerable and self-contained (describe any figure or arrangement in words).
+- Options must be plausible; do not use "all of the above" or "none of the above".
+- Keep each question under 45 words.
+- No two questions may test the same pattern or trick.
+
+Return JSON:
+{{"questions":[{{"text":"...","options":["a","b","c","d"],"answerIndex":0,"explanation":"one line"}}]}}"""
+    out = parse_json(call_claude(SYSTEM_WRITER, user, 3000))
+    items = (out or {}).get("questions")
+    if not items:
+        raise RuntimeError("analytical generation returned nothing usable")
+
+    def clean(q):
+        return {
+            "text": str(q["text"]).strip(),
+            "options": [str(o) for o in q.get("options", [])][:4],
+            "answerIndex": int(q.get("answerIndex", 0)),
+            "category": "analytical",
+            "explanation": q.get("explanation", ""),
+        }
+
+    out_qs = [q for q in (clean(x) for x in items) if len(q["options"]) == 4][:n]
+    if len(out_qs) < n:
+        raise RuntimeError("analytical generation incomplete")
+    return out_qs
+
+
+def ai_puzzle_questions(c):
+    n = CFG["n_puzzle"]
+    user = f"""{candidate_brief(c)}
+
+Write {n} multiple-choice puzzle questions, each with exactly 4 options and exactly one correct option.
+Use classic brain-teaser / lateral-thinking puzzle formats: river-crossing style constraint puzzles, weighing
+puzzles, rope/clock timing puzzles, relationship riddles, switch/light puzzles, or similar. These should be
+distinct from plain pattern-sequence or quantitative-aptitude questions - each one should require working
+through a small constraint or logic puzzle to reach the answer.
+
+Rules:
+- Every question must be fully self-contained and objectively answerable from the text alone.
+- Options must be plausible; do not use "all of the above" or "none of the above".
+- Keep each question under 60 words.
+- No two questions may reuse the same puzzle type or trick.
+
+Return JSON:
+{{"questions":[{{"text":"...","options":["a","b","c","d"],"answerIndex":0,"explanation":"one line"}}]}}"""
+    out = parse_json(call_claude(SYSTEM_WRITER, user, 3000))
+    items = (out or {}).get("questions")
+    if not items:
+        raise RuntimeError("puzzle generation returned nothing usable")
+
+    def clean(q):
+        return {
+            "text": str(q["text"]).strip(),
+            "options": [str(o) for o in q.get("options", [])][:4],
+            "answerIndex": int(q.get("answerIndex", 0)),
+            "category": "puzzle",
+            "explanation": q.get("explanation", ""),
+        }
+
+    out_qs = [q for q in (clean(x) for x in items) if len(q["options"]) == 4][:n]
+    if len(out_qs) < n:
+        raise RuntimeError("puzzle generation incomplete")
+    return out_qs
 
 
 def build_paper(c):
@@ -643,14 +705,18 @@ def build_paper(c):
         if not CFG["anthropic_key"]:
             raise RuntimeError("no api key configured")
         interview = ai_interview_questions(c)
-        part_a, part_b = ai_reasoning_questions(c)
+        math_qs = ai_math_questions(c)
+        analytical = ai_analytical_questions(c)
+        puzzle = ai_puzzle_questions(c)
     except Exception as exc:  # noqa: BLE001
         print(f"  [ai] falling back to question bank: {exc}")
         source = "fallback-after-error" if CFG["anthropic_key"] else "fallback-no-key"
         interview = [{"text": t, "focus": "interview"} for t in fallback_interview(c)]
-        part_a, part_b = fallback_reasoning()
+        math_qs = fallback_math()
+        analytical = fallback_analytical()
+        puzzle = fallback_puzzle()
 
-    games = [make_game_question(i + 1) for i in range(CFG["n_game"])]
+    games = make_game_rounds()
 
     questions = []
     for i, q in enumerate(interview):
@@ -662,12 +728,18 @@ def build_paper(c):
     n = 0
     for q in games:
         n += 1
-        questions.append({
+        item = {
             "id": new_id(3), "slot": 2, "slotName": "Reasoning", "n": n,
             "type": "game", "category": q["category"], "text": q["text"],
-            "tiles": q["tiles"], "sequence": q["sequence"], "timeLimit": q["timeLimit"],
-        })
-    for q in part_a + part_b:
+            "gameKind": q["gameKind"], "tiles": q["tiles"], "timeLimit": q["timeLimit"],
+        }
+        if q["gameKind"] == "reorder":
+            item["layout"] = q["layout"]
+            item["answerOrder"] = q["answerOrder"]
+        else:
+            item["sequence"] = q["sequence"]
+        questions.append(item)
+    for q in analytical + puzzle + math_qs:
         n += 1
         questions.append({
             "id": new_id(3), "slot": 2, "slotName": "Reasoning", "n": n,
@@ -687,6 +759,8 @@ def objective_score(c):
         a = next((x for x in c["answers"] if x["questionId"] == q["id"]), None)
         if q["type"] == "mcq":
             ok = bool(a and a.get("choice") is not None and int(a["choice"]) == int(q["answerIndex"]))
+        elif q.get("gameKind") == "reorder":
+            ok = bool(a and a.get("sequence") == q["answerOrder"])
         else:
             ok = bool(a and a.get("sequence") == q["sequence"])
         correct += 1 if ok else 0
@@ -858,7 +932,11 @@ def strip_question(q):
         out["options"] = q["options"]          # answerIndex is never sent to the candidate
     if q["type"] == "game":
         out["tiles"] = q["tiles"]
-        out["sequence"] = q["sequence"]        # the sequence is the puzzle itself, not a hidden answer key
+        out["gameKind"] = q.get("gameKind", "memory")
+        if out["gameKind"] == "reorder":
+            out["layout"] = q["layout"]        # the layout is the puzzle itself; answerOrder is the hidden key
+        else:
+            out["sequence"] = q["sequence"]    # the sequence is the puzzle itself, not a hidden answer key
     return out
 
 
@@ -1078,7 +1156,7 @@ class Handler(BaseHTTPRequestHandler):
             c.update({"status": "invited", "startedAt": None, "finishedAt": None, "slot1DeadlineAt": None,
                       "questions": [], "answers": [], "violations": [], "cursor": 0,
                       "verificationPhoto": None, "evidenceShots": [], "recording": None, "recordingBytes": 0,
-                      "report": None, "token": new_id(16)})
+                      "report": None})
             save()
             if old_photo:
                 try:
@@ -1155,9 +1233,12 @@ class Handler(BaseHTTPRequestHandler):
                 "slot1TimeSec": CFG["slot1_time_sec"],
                 "inSlot1": in_slot1(c),
                 "slot1RemainingSec": slot1_remaining_sec(c) if c["startedAt"] else CFG["slot1_time_sec"],
-                "plan": {"slot1": CFG["n_interview"], "slot2": 10 + CFG["n_role"],
+                "plan": {"slot1": CFG["n_interview"],
+                         "slot2": 2 * CFG["n_game"] + CFG["n_analytical"] + CFG["n_puzzle"] + CFG["n_math"],
                          "qTimeInterview": CFG["q_time_interview"], "qTimeReasoning": CFG["q_time_reasoning"],
-                         "mix": CFG["logic_mix"], "strict": CFG["strict_proctor"]},
+                         "nGame": CFG["n_game"], "nAnalytical": CFG["n_analytical"],
+                         "nPuzzle": CFG["n_puzzle"], "nMath": CFG["n_math"],
+                         "strict": CFG["strict_proctor"]},
                 "progress": progress(c),
                 "question": strip_question(c["questions"][c["cursor"]]) if c["status"] == "in_progress" and c["cursor"] < len(c["questions"]) else None,
                 "violations": c["violations"],
@@ -1229,6 +1310,7 @@ class Handler(BaseHTTPRequestHandler):
                 "sequence": seq_submitted,
                 "correct": (
                     (int(choice) == int(q["answerIndex"])) if q["type"] == "mcq" and choice is not None else
+                    (seq_submitted == q["answerOrder"]) if q["type"] == "game" and q.get("gameKind") == "reorder" else
                     (seq_submitted == q["sequence"]) if q["type"] == "game" else
                     (False if q["type"] == "mcq" else None)
                 ),

@@ -31,7 +31,7 @@ const S = {
   qStarted: 0, recBytes: 0, listening: false, recog: null, recogGen: 0, transcript: '',
   verifyStream: null, verifyShot: null, faceTimer: null, voiceTimer: null, deviceTimer: null,
   strikes: { device: 0, voice: 0 }, lastStrikeAt: { device: 0, voice: 0 },
-  gameSeq: [], gamePick: [], gamePlaying: false,
+  gameSeq: [], gamePick: [], gamePlaying: false, pendingNext: null, isLast: false,
 };
 
 const show = (id) => {
@@ -73,7 +73,7 @@ async function boot() {
   S.inSlot1 = st.inSlot1;
 
   if (st.status === 'completed') {
-    finished('Interview submitted', 'Scoring your interview…', '…');
+    finished('Interview Submitted Successfully', 'Your final responses have been saved. Scoring your interview…', '✓');
     return pollResult('You can close this window.');
   }
   if (st.status === 'terminated') {
@@ -98,13 +98,12 @@ async function boot() {
 
 function fillGuidelines(st) {
   const p = st.plan;
-  const m = p.mix;
   $('#greet').textContent = `Welcome, ${st.name}`;
   $('#roleLine').textContent = `You are interviewing for ${st.role}. Read every point below — the rules are enforced automatically.`;
   $('#totalMinTxt').textContent = `${Math.round(st.slot1TimeSec / 60)}-minute`;
   $('#s1Txt').textContent = p.slot1;
   $('#s2Txt').textContent = p.slot2;
-  $('#mixTxt').textContent = `${m.math} quantitative, ${m.grammar} English grammar and ${m.logic} logical reasoning`;
+  $('#mixTxt').textContent = `${2 * p.nGame} mini-games, ${p.nAnalytical} analytical ability, ${p.nPuzzle} puzzle and ${p.nMath} quantitative aptitude`;
   $('#planGrid').innerHTML = [
     ['Slot 1 · Interview', `${p.slot1} questions`, `${Math.round(st.slot1TimeSec / 60)}-minute clock, up to ${Math.round(p.qTimeInterview / 60)} min each, asked and answered by AI voice`],
     ['Slot 2 · Reasoning', `${p.slot2} questions`, `${p.qTimeReasoning}s each, multiple choice, text only`],
@@ -547,7 +546,7 @@ $('#submitEarlyBtn').addEventListener('click', async () => {
   }
   clearInterval(S.tick);
   try { await api('/finish', {}); } catch (_) {}
-  finished('Interview submitted', 'Scoring your interview…', '…');
+  finished('Interview Submitted Successfully', 'Your final responses have been saved. Scoring your interview…', '✓');
   pollResult('You submitted early — you can close this window.');
 });
 
@@ -564,16 +563,21 @@ function renderQuestion(q, progress) {
   stopListening();
 
   const overall = (progress.slot1.done + progress.slot2.done) + 1;
+  S.isLast = overall >= progress.total;
   $('#slotLabel').textContent = q.slot === 1 ? 'Slot 1 · Interview' : 'Slot 2 · Reasoning';
   $('#slotProgress').textContent = q.slot === 1
     ? `${progress.slot1.done + 1} / ${progress.slot1.total}`
     : `${progress.slot2.done + 1} / ${progress.slot2.total}`;
   $('#qNum').textContent = `Question ${overall} of ${progress.total}${q.slot === 2 ? ` · ${q.category}` : ''}`;
   $('#qText').textContent = q.text;
+  $('#nextMcq').textContent = S.isLast ? 'Submit Interview' : 'Next question';
+  $('#nextGame').textContent = S.isLast ? 'Submit Interview' : 'Submit sequence';
+  $('#nextOpen').textContent = S.isLast ? 'Submit Interview' : 'Next question';
 
   $('#mcqArea').classList.add('hide');
   $('#openArea').classList.add('hide');
   $('#gameArea').classList.add('hide');
+  $('#slot1DoneArea').classList.add('hide');
 
   if (q.type === 'open') {
     $('#openArea').classList.remove('hide');
@@ -605,16 +609,32 @@ function renderQuestion(q, progress) {
 }
 
 /* ------------------------------------------------------------------ */
-/* slot 2 memory-tile mini-game                                        */
+/* slot 2 mini-games: two distinct, clearly separated games            */
 /* ------------------------------------------------------------------ */
 
 function setupGame(q) {
-  S.gameSeq = q.sequence;
   S.gamePick = [];
   $('#nextGame').disabled = true;
-  $('#gameNote').textContent = 'Watch the tiles light up in order…';
   const tilesEl = $('#tiles');
   tilesEl.innerHTML = '';
+
+  if (q.gameKind === 'reorder') {
+    S.gameSeq = q.layout;
+    S.gamePlaying = false;
+    $('#gameNote').textContent = 'Click the tiles in ascending numeric order — smallest first.';
+    for (let i = 0; i < q.tiles; i++) {
+      const t = document.createElement('div');
+      t.className = 'tile';
+      t.dataset.i = String(i);
+      t.textContent = q.layout[i];
+      t.addEventListener('click', () => onTileClick(i, q));
+      tilesEl.appendChild(t);
+    }
+    return;
+  }
+
+  S.gameSeq = q.sequence;
+  $('#gameNote').textContent = 'Watch the tiles light up in order…';
   for (let i = 0; i < q.tiles; i++) {
     const t = document.createElement('div');
     t.className = 'tile';
@@ -643,22 +663,33 @@ async function playSequence(q) {
 
 function onTileClick(i, q) {
   if (S.gamePlaying || S.question !== q) return;
+  if (q.gameKind === 'reorder' && S.gamePick.includes(i)) return;
   S.gamePick.push(i);
   const tile = $(`.tile[data-i="${i}"]`);
-  if (tile) { tile.classList.add('picked'); setTimeout(() => tile.classList.remove('picked'), 250); }
+  if (tile) {
+    tile.classList.add('picked');
+    if (q.gameKind !== 'reorder') setTimeout(() => tile.classList.remove('picked'), 250);
+  }
   $('#gameNote').textContent = `Picked ${S.gamePick.length} of ${S.gameSeq.length}.`;
   if (S.gamePick.length >= S.gameSeq.length) $('#nextGame').disabled = false;
 }
 
 $('#clearGame').addEventListener('click', () => {
   if (S.gamePlaying) return;
+  $('#tiles').querySelectorAll('.tile').forEach((t) => t.classList.remove('picked'));
+  if (S.question && S.question.gameKind === 'reorder') {
+    S.gamePick = [];
+    $('#nextGame').disabled = true;
+    $('#gameNote').textContent = 'Cleared. Click the tiles in ascending numeric order — smallest first.';
+    return;
+  }
   S.gamePick = [];
   $('#nextGame').disabled = true;
   $('#gameNote').textContent = 'Cleared. Repeat the sequence by clicking the tiles in the same order.';
 });
-$('#nextGame').addEventListener('click', () => submit(false));
+$('#nextGame').addEventListener('click', () => confirmFinalSubmit(() => submit(false)));
 
-$('#nextOpen').addEventListener('click', () => submit(false));
+$('#nextOpen').addEventListener('click', () => confirmFinalSubmit(() => submit(false)));
 $('#clearOpen').addEventListener('click', () => {
   S.transcript = '';
   $('#liveTranscript').textContent = '';
@@ -666,9 +697,24 @@ $('#clearOpen').addEventListener('click', () => {
 });
 $('#nextMcq').addEventListener('click', () => {
   const sel = $('#opts').querySelector('input:checked');
-  if (!sel) { $('#nextMcq').textContent = 'Pick an option first'; setTimeout(() => ($('#nextMcq').textContent = 'Next question'), 1500); return; }
-  submit(false);
+  if (!sel) { $('#nextMcq').textContent = 'Pick an option first'; setTimeout(() => ($('#nextMcq').textContent = S.isLast ? 'Submit Interview' : 'Next question'), 1500); return; }
+  confirmFinalSubmit(() => submit(false));
 });
+
+// The final question's button submits the whole interview, so it gets an
+// explicit confirmation step — same disarm-then-rearm dance as the early-submit
+// button, since opening a native confirm() blurs the window.
+function confirmFinalSubmit(go) {
+  if (!S.isLast) return go();
+  const wasArmed = S.armed;
+  S.armed = false;
+  const ok = confirm('Submit the interview now? You will not be able to change any answers after this.');
+  if (!ok) {
+    setTimeout(() => { S.armed = wasArmed; }, 1500);
+    return;
+  }
+  go();
+}
 
 let submitting = false;
 async function submit(auto) {
@@ -690,12 +736,16 @@ async function submit(auto) {
   try {
     const res = await api('/answer', payload);
     if (res.done) {
-      finished('Interview submitted', 'Scoring your interview…', '…');
+      finished('Interview Submitted Successfully', 'Your final responses have been saved. Scoring your interview…', '✓');
       pollResult('Thank you — you can close this window.');
     } else {
       S.slot1Left = res.slot1RemainingSec;
       S.inSlot1 = res.inSlot1;
-      renderQuestion(res.question, res.progress);
+      if (q.slot === 1 && res.question.slot === 2) {
+        showSlot1Done(res.question, res.progress);
+      } else {
+        renderQuestion(res.question, res.progress);
+      }
     }
   } catch (e) {
     if (/not active|closed/i.test(e.message)) return boot();
@@ -745,14 +795,55 @@ async function endSlot1Timeout() {
   try {
     const st = await api('/state');
     if (st.status === 'completed') {
-      finished('Interview submitted', 'Scoring your interview…', '…');
+      finished('Interview Submitted Successfully', 'Your final responses have been saved. Scoring your interview…', '✓');
       return pollResult('You can close this window.');
     }
+    const wasSlot1 = S.question && S.question.slot === 1;
     S.inSlot1 = st.inSlot1;
     $('#clockCol').classList.toggle('hide', !S.inSlot1);
-    if (st.question) renderQuestion(st.question, st.progress);
+    if (st.question) {
+      if (wasSlot1 && st.question.slot === 2) {
+        showSlot1Done(st.question, st.progress);
+      } else {
+        renderQuestion(st.question, st.progress);
+      }
+    }
   } catch (_) { /* try again on the next tick */ }
 }
+
+function showSlot1Done(nextQ, nextProgress) {
+  S.pendingNext = { q: nextQ, progress: nextProgress };
+  S.question = null;
+  stopListening();
+  clearInterval(S.tick);
+  $('#clockCol').classList.add('hide');
+  $('#mcqArea').classList.add('hide');
+  $('#openArea').classList.add('hide');
+  $('#gameArea').classList.add('hide');
+  $('#slot1DoneArea').classList.remove('hide');
+  $('#slotLabel').textContent = 'Slot 1 · Interview';
+  $('#slotProgress').textContent = 'Complete';
+  $('#qNum').textContent = 'Slot 1 complete';
+  $('#qTimer').textContent = '';
+  $('#qText').textContent = 'Nice work — you have finished Slot 1.';
+  $('#qBarFill').style.width = '100%';
+}
+
+$('#submitSlot1Btn').addEventListener('click', () => {
+  if (!S.pendingNext) return;
+  const wasArmed = S.armed;
+  S.armed = false;
+  const ok = confirm('Submit Slot 1 and continue to Slot 2? Slot 2 is text-only and you cannot go back to Slot 1 after this.');
+  if (!ok) {
+    setTimeout(() => { S.armed = wasArmed; }, 1500);
+    return;
+  }
+  const { q, progress } = S.pendingNext;
+  S.pendingNext = null;
+  $('#slot1DoneArea').classList.add('hide');
+  startClock();
+  renderQuestion(q, progress);
+});
 
 /* ------------------------------------------------------------------ */
 /* AI voice: speak the question, capture the spoken answer             */

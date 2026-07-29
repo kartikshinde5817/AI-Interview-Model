@@ -37,7 +37,7 @@
       <h2>How the interview runs</h2>
       <div class="rules">
         <div class="rule"><i>01</i><span><b>Slot 1 — Interview.</b> <span id="s1Txt"></span> spoken questions about your resume and the position, asked one at a time by an AI voice, on its own <b id="totalMinTxt"></b> clock. Answer out loud — your speech is captured automatically. There is no typing.</span></div>
-        <div class="rule"><i>02</i><span><b>Slot 2 — Reasoning.</b> <span id="s2Txt"></span> questions, fully text-based with no voice: a short memory-tile game, then <span id="mixTxt"></span>, followed by 10 questions on the role you applied for.</span></div>
+        <div class="rule"><i>02</i><span><b>Slot 2 — Reasoning.</b> <span id="s2Txt"></span> questions, fully text-based with no voice: <span id="mixTxt"></span> questions.</span></div>
         <div class="rule"><i>03</i><span>Each question also has its own time window. When it runs out the interview moves on by itself and you cannot return to that question. If Slot 1's clock runs out first, any remaining Slot 1 questions are skipped and Slot 2 begins.</span></div>
         <div class="rule"><i>04</i><span>Finished early? Press <b>Next question</b> to submit and move on. In Slot 1 you can press <b>Clear answer</b> to re-record your answer before moving on.</span></div>
         <div class="rule"><i>05</i><span>Questions are asked in order. There is no going back, and no editing an answer once submitted.</span></div>
@@ -189,6 +189,14 @@
         <div class="qfoot">
           <button class="btn ghost" id="clearGame" type="button">Clear</button>
           <button class="btn go" id="nextGame" disabled>Submit sequence</button>
+        </div>
+      </div>
+
+      <div id="slot1DoneArea" class="hide">
+        <p class="note">Slot 1 is complete. Slot 2 is text-based only — no voice assistance, no more speaking. Once you submit, you cannot go back to Slot 1.</p>
+        <div class="qfoot">
+          <span class="note">Ready to continue?</span>
+          <button class="btn go" id="submitSlot1Btn" type="button">Submit Slot 1 &amp; continue to Slot 2</button>
         </div>
       </div>
     </div>

@@ -294,6 +294,8 @@ textarea.answer:focus { border-color: var(--live); outline: none; }
 .tile {
   aspect-ratio: 1; border-radius: var(--r); border: 1px solid var(--line-dark); cursor: pointer;
   background: #1c2531; transition: transform .1s, filter .15s; filter: brightness(0.6);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 700; color: rgba(255,255,255,.9); user-select: none;
 }
 .tile.lit { filter: brightness(1.3); transform: scale(1.03); }
 .tile.picked { filter: brightness(1); outline: 2px solid #e7ecf2; }
