@@ -24,7 +24,12 @@ Open **http://localhost:8000**
 | Candidate | `user` | `user123` |
 
 Python 3.9 or newer. `requirements.txt` adds PDF/DOCX resume parsing (`pypdf`,
-`python-docx`) and Aadhaar encryption (`cryptography`) — everything else is standard library.
+`python-docx`), Aadhaar encryption (`cryptography`) and face matching
+(`opencv-python-headless`, `numpy`) — everything else is standard library.
+
+On the first identity check the server downloads two ONNX face models (~37 MB total) into
+`data/models/` and caches them. That is the only network fetch; after it, matching runs
+entirely offline.
 
 To turn on AI-written questions and AI scoring:
 
@@ -99,13 +104,47 @@ The invitation email spells out, before the candidate begins:
   and microphone recorded throughout — along with what happens when each is broken.
 
 At the start of the interview the candidate must therefore pass two identity gates before any
-question is shown: the Aadhaar number check and the live verification photo. In the admin
-panel, the candidate's record grows an **Identity check against application** card putting the
-photo they submitted when applying next to the live photo taken at the interview, alongside the
-Aadhaar match result and any failed attempts (which are also logged as integrity flags).
+question is shown: the Aadhaar number check and the live verification photo.
 
-Candidates added by hand rather than through the application form have no Aadhaar on file, so
-they skip the Aadhaar gate and keep the original photo-only verification.
+### Face recognition
+
+The live interview photo is matched against the photo submitted with the application, using
+OpenCV's YuNet face detector and SFace recogniser. The two faces become embeddings, and their
+cosine similarity is the confidence score. In testing, the same person across different
+captures scores 0.93–1.00 while different people score 0.14–0.23, against a default
+threshold of **0.363** (SFace's own recommended cut-off, editable in settings).
+
+Three outcomes:
+
+| Result | Score | What happens |
+|---|---|---|
+| **Face matched** | at or above threshold | Interview proceeds. |
+| **Identity verification failed** | clearly below threshold | Interview is **blocked**, an integrity flag is logged, and the hiring team is emailed immediately. The candidate gets 3 attempts in total, then the attempt locks. |
+| **Needs manual review** | borderline, or no face detectable, or models unavailable | Interview proceeds, but the record is flagged prominently for a human to check. |
+
+So if someone who did not submit the application form tries to sit the interview, they cannot
+get past the photo step — and you find out by email while it is happening.
+
+Saved into the candidate's interview record for review: the verification status, the confidence
+score and the threshold it was judged against, the timestamp of the check, the number of
+attempts used, and both photo filenames. The **Identity check against application** card in the
+candidate record shows the application photo and the live interview photo side by side with the
+verdict, the Aadhaar match result, and a **Re-run face match** button (a pass on re-run clears a
+lock). Failed candidates are badged **ID failed** in the candidate list, and **Reset attempt**
+clears all identity state so a genuine candidate can start over.
+
+Set where alerts go with the `adminNotifyEmail` setting in the dashboard, or the `ADMIN_EMAIL`
+environment variable.
+
+Candidates added by hand rather than through the application form have no Aadhaar and no
+registered photo on file, so they skip both gates and keep the original photo-only verification.
+
+### Microphone check
+
+Before the interview can be started the candidate must actually speak: the **Continue** button
+on the microphone check stays disabled until either speech recognition transcribes at least
+three words, or the measured microphone level proves sustained sound. No timeout unlocks it on
+its own, so a silent or muted microphone cannot be skipped past.
 
 ---
 
@@ -168,7 +207,8 @@ Every setting is an environment variable — no file to edit.
 | `HOST` | `0.0.0.0` | |
 | `ADMIN_USER` / `ADMIN_PASS` | `admin` / `admin123` | Admin panel |
 | `CANDIDATE_USER` / `CANDIDATE_PASS` | `user` / `user123` | Candidate panel |
-| `SESSION_SECRET` | dev value | **Change before deploying** |
+| `SESSION_SECRET` | dev value | **Change before deploying** — also derives the Aadhaar encryption key |
+| `ADMIN_EMAIL` | — | Fallback recipient for identity-failure alerts |
 | `TOTAL_TIME_SEC` | `1200` | Hard cap across both slots |
 | `Q_TIME_INTERVIEW` | `120` | Seconds per Slot 1 question |
 | `Q_TIME_REASONING` | `45` | Seconds per Slot 2 question |

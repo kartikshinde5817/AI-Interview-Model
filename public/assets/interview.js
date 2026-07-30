@@ -31,6 +31,7 @@ const S = {
   qStarted: 0, recBytes: 0, listening: false, recog: null, recogGen: 0, transcript: '',
   verifyStream: null, verifyShot: null, faceTimer: null, voiceTimer: null, deviceTimer: null,
   needsAadhaar: false, aadhaarOk: false,
+  loudFrames: 0, micTestPassed: false, micGateTimer: null, micTestSR: true,
   strikes: { device: 0, voice: 0 }, lastStrikeAt: { device: 0, voice: 0 },
   gameSeq: [], gamePick: [], gamePlaying: false, pendingNext: null, isLast: false,
 };
@@ -172,6 +173,10 @@ function meterAudio(stream) {
       for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
       const el = $('#micLevel');
       if (el) el.style.width = `${Math.min(100, (peak / 60) * 100)}%`;
+      // Counting frames that are clearly above room noise gives the mic test a
+      // way to prove the candidate actually spoke, even in browsers with no
+      // speech recognition at all.
+      if (peak > 12) S.loudFrames++;
       requestAnimationFrame(loop);
     };
     loop();
@@ -268,26 +273,59 @@ $('#captureBtn').addEventListener('click', async () => {
   const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.88));
   if (!blob) { err.textContent = 'Could not capture a photo. Try again.'; err.classList.remove('hide'); return; }
   $('#captureBtn').disabled = true;
-  $('#captureBtn').textContent = 'Uploading…';
+  $('#captureBtn').textContent = 'Checking your identity…';
   try {
-    await fetch(`/api/interview/${TOKEN}/verification`, {
+    const res = await fetch(`/api/interview/${TOKEN}/verification`, {
       method: 'POST', credentials: 'same-origin',
       headers: { 'content-type': 'application/octet-stream' },
       body: blob,
     });
+    const data = await res.json().catch(() => ({}));
+
+    // The server compares this photo against the one submitted with the
+    // application. A mismatch stops the interview here, before any question.
+    if (!res.ok) {
+      err.className = 'banner';
+      err.textContent = data.error || 'Identity verification failed.';
+      err.classList.remove('hide');
+      if (data.attemptsLeft === 0 || res.status === 403 && data.attemptsLeft === undefined) {
+        $('#captureBtn').classList.add('hide');
+        $('#retakeBtn').classList.add('hide');
+        $('#verifyInstr').textContent =
+          'Identity verification failed. This attempt has been locked and the hiring team notified.';
+        speak('Identity verification failed. The interview cannot continue.');
+      } else {
+        speak('That photo did not match your application photo. Please face the camera in good light and try again.');
+      }
+      return;
+    }
+
     S.verifyShot = URL.createObjectURL(blob);
     $('#shotPreview').src = S.verifyShot;
     $('#shotPreview').classList.remove('hide');
     $('#verifyVideo').classList.add('hide');
     $('#captureBtn').classList.add('hide');
     $('#retakeBtn').classList.remove('hide');
+    const fm = data.faceMatch;
+    if (fm && fm.status === 'verified') {
+      err.className = 'banner go';
+      err.textContent = 'Identity confirmed — you match the photo on your application.';
+      err.classList.remove('hide');
+    } else if (fm && fm.status === 'review') {
+      err.className = 'banner warn';
+      err.textContent = 'Your photo has been saved and will be checked by the hiring team.';
+      err.classList.remove('hide');
+    }
     beginMicTest();
   } catch (_) {
+    err.className = 'banner';
     err.textContent = 'The photo could not be uploaded. Check your connection and try again.';
     err.classList.remove('hide');
   } finally {
-    $('#captureBtn').disabled = false;
-    $('#captureBtn').textContent = 'Capture verification photo';
+    if (!$('#captureBtn').classList.contains('hide')) {
+      $('#captureBtn').disabled = false;
+      $('#captureBtn').textContent = 'Capture verification photo';
+    }
   }
 });
 
@@ -298,25 +336,65 @@ $('#retakeBtn').addEventListener('click', () => {
   $('#retakeBtn').classList.add('hide');
   $('#micTestPanel').classList.add('hide');
   $('#readyPanel').classList.add('hide');
+  // A new photo means the microphone check has to be earned again.
+  S.micTestPassed = false;
+  clearInterval(S.micGateTimer);
+  $('#micTestContinue').disabled = true;
 });
+
+// Minimum number of above-noise audio frames that counts as "they spoke".
+// At ~60fps this is roughly two thirds of a second of actual sound.
+const MIC_LOUD_FRAMES_REQUIRED = 40;
 
 function beginMicTest() {
   $('#micTestPanel').classList.remove('hide');
   const sentence = MIC_TEST_SENTENCES[Math.floor(Math.random() * MIC_TEST_SENTENCES.length)];
   $('#micSentence').textContent = sentence;
   $('#micTranscript').textContent = '';
+  // Continue stays locked until the candidate has actually spoken - nothing
+  // here ever unlocks it on a timer alone.
+  S.micTestPassed = false;
+  S.loudFrames = 0;
   $('#micTestContinue').disabled = true;
+  $('#micTestNote').textContent = 'Waiting for you to read the sentence aloud…';
   speak('Now please read the sentence on the screen aloud, so we can check your microphone.', () => micTestListen());
+}
+
+function passMicTest(note) {
+  if (S.micTestPassed) return;
+  S.micTestPassed = true;
+  clearInterval(S.micGateTimer);
+  $('#micTestNote').textContent = note;
+  $('#micTestContinue').disabled = false;
+}
+
+function micTestGate() {
+  clearInterval(S.micGateTimer);
+  const startedAt = Date.now();
+  S.micGateTimer = setInterval(() => {
+    if (S.micTestPassed) { clearInterval(S.micGateTimer); return; }
+    const waited = Date.now() - startedAt;
+    const spoke = S.loudFrames >= MIC_LOUD_FRAMES_REQUIRED;
+    // Transcribed words are the preferred proof. Measured microphone level is the
+    // fallback for browsers where recognition never fires, or where it stalls.
+    if (spoke && (!S.micTestSR || waited > 9000)) {
+      passMicTest('Your voice was picked up by the microphone.');
+    } else if (!spoke && waited > 8000) {
+      $('#micTestNote').textContent = 'We cannot hear you yet — read the sentence aloud, a little louder.';
+    }
+  }, 700);
 }
 
 function micTestListen() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
+    S.micTestSR = false;
     $('#micTestWarn').classList.remove('hide');
-    $('#micTestNote').textContent = 'Voice capture unavailable in this browser.';
-    $('#micTestContinue').disabled = false;
+    $('#micTestNote').textContent = 'Read the sentence aloud so we can hear your microphone.';
+    micTestGate();
     return;
   }
+  S.micTestSR = true;
   let heard = '';
   const recog = new SR();
   recog.continuous = true;
@@ -331,15 +409,13 @@ function micTestListen() {
     if (finalChunk) heard = (heard ? heard.trim() + ' ' : '') + finalChunk.trim();
     $('#micTranscript').textContent = heard + (interim ? ' ' + interim : '');
     if ((heard + interim).trim().split(/\s+/).length >= 3) {
-      $('#micTestNote').textContent = 'Microphone check passed.';
-      $('#micTestContinue').disabled = false;
+      passMicTest('Microphone check passed.');
     }
   };
   recog.onend = () => {};
   try { recog.start(); } catch (_) {}
   S.micTestRecog = recog;
-  // Don't force the candidate to wait forever if recognition stalls.
-  setTimeout(() => { $('#micTestContinue').disabled = false; }, 12000);
+  micTestGate();
 }
 
 $('#micTestContinue').addEventListener('click', () => {

@@ -68,11 +68,16 @@ RECORDINGS = os.path.join(DATA, "recordings")
 VERIFICATIONS = os.path.join(DATA, "verifications")
 EVIDENCE = os.path.join(DATA, "evidence")
 PHOTOS = os.path.join(DATA, "photos")
+MODELS = os.path.join(DATA, "models")
 DB_FILE = os.path.join(DATA, "db.json")
 
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # applies to the public, unauthenticated /api/apply endpoint
 RESUME_EXTS = (".pdf", ".doc", ".docx", ".txt", ".md")
 PHOTO_EXTS = (".jpg", ".jpeg", ".png")
+
+# SFace's own documented cosine cut-off for "same person".
+SFACE_COSINE_THRESHOLD = 0.363
+MAX_FACE_ATTEMPTS = 3
 
 
 def env(key, default):
@@ -118,9 +123,10 @@ CFG = {
     "resend_from": env("RESEND_FROM", "AI Interview Console <onboarding@resend.dev>"),
     "brevo_api_key": env("BREVO_API_KEY", ""),
     "brevo_from": env("BREVO_FROM", ""),
+    "admin_email": env("ADMIN_EMAIL", ""),
 }
 
-for d in (DATA, UPLOADS, RECORDINGS, VERIFICATIONS, EVIDENCE, PHOTOS):
+for d in (DATA, UPLOADS, RECORDINGS, VERIFICATIONS, EVIDENCE, PHOTOS, MODELS):
     os.makedirs(d, exist_ok=True)
 
 
@@ -148,6 +154,8 @@ SETTINGS_DEFAULTS = {
     "atsThreshold": 60,
     "interviewRoleTitle": "Open position",
     "interviewLinkDays": 3,    # shortlisted candidates get a link that expires this many days later
+    "faceMatchThreshold": SFACE_COSINE_THRESHOLD,
+    "adminNotifyEmail": "",    # where identity-failure alerts go; falls back to ADMIN_EMAIL
     "autoSendOnSubmit": False,
     "rejectionSubject": "Your application update - {{role}}",
     "rejectionBody": (
@@ -176,6 +184,7 @@ CANDIDATE_DEFAULTS = {
     "report": None, "generatedBy": None, "notes": "", "resumeText": "", "resumeFile": None,
     "scheduleStart": None, "scheduleEnd": None, "username": None, "password": None,
     "applicationId": None, "aadhaarVerified": False, "aadhaarAttempts": 0,
+    "faceMatch": None, "faceAttempts": 0, "identityBlocked": False,
 }
 
 _USERNAME_ADJ = ["swift", "bright", "calm", "keen", "bold", "quiet", "quick", "sharp", "clear", "steady"]
@@ -283,6 +292,9 @@ def create_candidate(**kw):
         "applicationId": kw.get("applicationId"),
         "aadhaarVerified": False,
         "aadhaarAttempts": 0,
+        "faceMatch": None,
+        "faceAttempts": 0,
+        "identityBlocked": False,
     }
     with _lock:
         _state["candidates"].insert(0, c)
@@ -447,6 +459,149 @@ def decrypt_aadhaar(token):
         return _fernet().decrypt(token.encode()).decode()
     except InvalidToken:
         return ""
+
+
+# --------------------------------------------------------------------------- #
+# Face matching (OpenCV YuNet detector + SFace recogniser)                     #
+# --------------------------------------------------------------------------- #
+
+# Downloaded once on first use and cached in data/models/. YuNet finds the face,
+# SFace turns it into a 128-d embedding; two embeddings are compared by cosine
+# similarity, where SFace's own documented same-person cut-off is 0.363.
+FACE_MODELS = {
+    "detector": ("face_detection_yunet_2023mar.onnx",
+                 "https://github.com/opencv/opencv_zoo/raw/main/models/"
+                 "face_detection_yunet/face_detection_yunet_2023mar.onnx"),
+    "recognizer": ("face_recognition_sface_2021dec.onnx",
+                   "https://github.com/opencv/opencv_zoo/raw/main/models/"
+                   "face_recognition_sface/face_recognition_sface_2021dec.onnx"),
+}
+
+_face_lock = threading.Lock()
+_face_engine = None          # None = not tried yet, False = unavailable, else (detector, recognizer)
+
+
+def _fetch_face_model(name, url):
+    path = os.path.join(MODELS, name)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return path
+    print(f"  [face] downloading {name} (one time)…")
+    tmp = path + ".part"
+    req = urllib.request.Request(url, headers={"User-Agent": "InterviewConsole/1.0"})
+    with urllib.request.urlopen(req, timeout=180) as res, open(tmp, "wb") as f:
+        shutil.copyfileobj(res, f)
+    os.replace(tmp, path)
+    print(f"  [face] {name} ready")
+    return path
+
+
+def face_engine():
+    """Lazily build and cache the detector/recogniser pair. Returns None if the
+    models or OpenCV are unavailable, which callers treat as 'needs review'
+    rather than as a failed identity check."""
+    global _face_engine
+    with _face_lock:
+        if _face_engine is not None:
+            return _face_engine or None
+        try:
+            import cv2
+            det_path = _fetch_face_model(*FACE_MODELS["detector"])
+            rec_path = _fetch_face_model(*FACE_MODELS["recognizer"])
+            detector = cv2.FaceDetectorYN.create(det_path, "", (320, 320), score_threshold=0.7)
+            recognizer = cv2.FaceRecognizerSF.create(rec_path, "")
+            _face_engine = (detector, recognizer)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ! face matching unavailable: {exc}")
+            _face_engine = False
+        return _face_engine or None
+
+
+FACE_DETECT_MAX_SIDE = 1024
+
+
+def face_embedding(engine, image_path):
+    """Embedding of the largest face in the image, plus how many faces were seen.
+
+    Largest wins on purpose: candidates hold their Aadhaar card up beside their
+    head, and the portrait printed on the card is itself a detectable face - just
+    a much smaller one than the live person behind it.
+
+    The image is scaled down first because YuNet is unreliable at full phone-camera
+    resolution - it misses faces outright on multi-megapixel portraits, which is
+    exactly what people upload.
+    """
+    import cv2
+    detector, recognizer = engine
+    img = cv2.imread(image_path)
+    if img is None:
+        return None, 0
+    h, w = img.shape[:2]
+    scale = FACE_DETECT_MAX_SIDE / max(h, w)
+    if scale < 1:
+        img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                         interpolation=cv2.INTER_AREA)
+        h, w = img.shape[:2]
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(img)
+    if faces is None or len(faces) == 0:
+        return None, 0
+    largest = max(faces, key=lambda f: float(f[2]) * float(f[3]))
+    aligned = recognizer.alignCrop(img, largest)
+    return recognizer.feature(aligned), len(faces)
+
+
+def compare_faces(reference_path, live_path, threshold=None):
+    """Cosine-match two photos. Never raises: any problem comes back as
+    'review' so a broken model can't lock out a legitimate candidate."""
+    import cv2
+    threshold = SFACE_COSINE_THRESHOLD if threshold is None else float(threshold)
+    result = {"status": "review", "score": None, "threshold": round(threshold, 3),
+              "detail": "", "checkedAt": now_iso(),
+              "referenceFile": os.path.basename(reference_path) if reference_path else None,
+              "liveFile": os.path.basename(live_path) if live_path else None}
+
+    engine = face_engine()
+    if not engine:
+        result["detail"] = ("Face matching is unavailable on the server, so this identity could "
+                            "not be checked automatically. Compare the two photos by hand.")
+        return result
+    try:
+        ref_feat, ref_faces = face_embedding(engine, reference_path)
+        live_feat, live_faces = face_embedding(engine, live_path)
+        if ref_feat is None:
+            result["detail"] = ("No face could be found in the photo submitted with the "
+                               "application, so there is nothing to compare against.")
+            return result
+        if live_feat is None:
+            result["detail"] = ("No face could be found in the interview photo - it may be too "
+                               "dark, blurred, or the face may not be facing the camera.")
+            return result
+        score = float(recognizer_match(engine, ref_feat, live_feat))
+        result["score"] = round(score, 4)
+        result["facesInLivePhoto"] = int(live_faces)
+        if score >= threshold:
+            result["status"] = "verified"
+            result["detail"] = (f"The interview photo matches the application photo "
+                                f"(similarity {score:.3f}, needs {threshold:.3f}).")
+        elif score >= threshold * 0.85:
+            # Close to the line: lighting and angle can push a genuine match just
+            # under it, so this is escalated to a human instead of auto-failed.
+            result["status"] = "review"
+            result["detail"] = (f"Borderline result (similarity {score:.3f} against a "
+                                f"{threshold:.3f} threshold). Confirm by eye before deciding.")
+        else:
+            result["status"] = "failed"
+            result["detail"] = (f"The interview photo does not match the application photo "
+                                f"(similarity {score:.3f}, needs at least {threshold:.3f}).")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! face comparison failed: {exc}")
+        result["detail"] = f"The photos could not be compared automatically ({exc})."
+    return result
+
+
+def recognizer_match(engine, feat_a, feat_b):
+    import cv2
+    return engine[1].match(feat_a, feat_b, cv2.FaceRecognizerSF_FR_COSINE)
 
 
 INTERVIEW_PREP = [
@@ -703,6 +858,40 @@ def send_rejection_email(a):
         return False, "no email on file"
     subject, text_body, html_body = build_rejection_content(a, get_settings())
     return send_email(a["email"], a.get("name"), subject, text_body, html_body)
+
+
+def notify_identity_failure(c, result, locked, base_url):
+    """Tell the hiring team straight away that someone failed the face check -
+    this is the one proctoring event that stops an interview before it starts."""
+    to = (get_settings().get("adminNotifyEmail") or CFG["admin_email"] or "").strip()
+    headline = ("Identity verification FAILED and the attempt is now locked"
+                if locked else "Identity verification FAILED")
+    lines = [
+        f"Candidate: {c['name']} <{c.get('email') or 'no email'}>",
+        f"Position: {c['role']}",
+        f"Similarity score: {result.get('score')} (threshold {result.get('threshold')})",
+        f"Attempt: {c['faceAttempts']} of {MAX_FACE_ATTEMPTS}",
+        f"Checked at: {result.get('checkedAt')}",
+        "",
+        result.get("detail", ""),
+        "",
+        f"Review both photos side by side here: {base_url}/dashboard",
+    ]
+    if locked:
+        lines.append("")
+        lines.append("The candidate has used all attempts and cannot start the interview. "
+                     "Reset the attempt from the dashboard if you want to give them another try.")
+    text_body = f"{headline}\n\n" + "\n".join(lines)
+    html_body = (f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#12161c">'
+                 f'<p style="color:#be3a2b;font-weight:700">{esc_html(headline)}</p>'
+                 f'<pre style="font-family:inherit;white-space:pre-wrap">{esc_html(chr(10).join(lines))}</pre></div>')
+    subject = f"[Interview] Identity check failed - {c['name']}"
+    if not to:
+        print(f"  [identity] {headline} for {c['name']} - no admin email configured, not sent")
+        return False, "no admin notification address configured"
+    ok, msg = send_email(to, "Hiring team", subject, text_body, html_body)
+    print(f"  [identity] alert to {to}: {'sent' if ok else 'NOT sent'} ({msg})")
+    return ok, msg
 
 
 def process_application(a, base_url):
@@ -1308,6 +1497,8 @@ def public_view(c):
         "violations": len(c["violations"]), "hasRecording": bool(c["recording"]),
         "overall": (c["report"] or {}).get("overall"),
         "recommendation": (c["report"] or {}).get("recommendation"),
+        "identityStatus": (c.get("faceMatch") or {}).get("status"),
+        "identityBlocked": bool(c.get("identityBlocked")),
     }
 
 
@@ -1592,6 +1783,10 @@ class Handler(BaseHTTPRequestHandler):
                               "applicationId": c["applicationId"],
                               "aadhaarVerified": c["aadhaarVerified"],
                               "aadhaarAttempts": c["aadhaarAttempts"],
+                              "faceMatch": c["faceMatch"],
+                              "faceAttempts": c["faceAttempts"],
+                              "identityBlocked": c["identityBlocked"],
+                              "maxFaceAttempts": MAX_FACE_ATTEMPTS,
                               "application": {
                                   "id": app["id"], "name": app["name"], "email": app["email"],
                                   "mobile": app["mobile"], "atsScore": app["atsScore"],
@@ -1650,7 +1845,9 @@ class Handler(BaseHTTPRequestHandler):
             c.update({"status": "invited", "startedAt": None, "finishedAt": None, "slot1DeadlineAt": None,
                       "questions": [], "answers": [], "violations": [], "cursor": 0,
                       "verificationPhoto": None, "evidenceShots": [], "recording": None, "recordingBytes": 0,
-                      "report": None})
+                      "report": None,
+                      "faceMatch": None, "faceAttempts": 0, "identityBlocked": False,
+                      "aadhaarVerified": False, "aadhaarAttempts": 0})
             save()
             if old_photo:
                 try:
@@ -1668,6 +1865,30 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
             return self.json({"ok": True, "candidate": public_view(c)})
+
+        m = re.fullmatch(r"/api/admin/candidates/([0-9a-f]+)/face-match", path)
+        if m and method == "POST":
+            if not self.require_admin():
+                return
+            c = find_candidate(m.group(1))
+            if not c:
+                return self.error_json(404, "Candidate not found.")
+            app = find_application(c["applicationId"]) if c.get("applicationId") else None
+            if not (app and app.get("photoFile")):
+                return self.error_json(400, "This candidate has no application photo to match against.")
+            if not c.get("verificationPhoto"):
+                return self.error_json(400, "This candidate has not taken an interview photo yet.")
+            result = compare_faces(
+                os.path.join(PHOTOS, app["photoFile"]),
+                os.path.join(VERIFICATIONS, c["verificationPhoto"]),
+                get_settings().get("faceMatchThreshold"),
+            )
+            c["faceMatch"] = result
+            # An admin re-run is the override: a pass here clears the lock.
+            if result["status"] != "failed":
+                c["identityBlocked"] = False
+            save()
+            return self.json({"ok": True, "faceMatch": result})
 
         m = re.fullmatch(r"/api/admin/candidates/([0-9a-f]+)/resume", path)
         if m and method == "GET":
@@ -1741,9 +1962,17 @@ class Handler(BaseHTTPRequestHandler):
                 link_days = max(1, min(365, int(b.get("interviewLinkDays", s["interviewLinkDays"]))))
             except (TypeError, ValueError):
                 link_days = s["interviewLinkDays"]
+            try:
+                face_threshold = max(0.05, min(0.95, float(b.get("faceMatchThreshold", s["faceMatchThreshold"]))))
+            except (TypeError, ValueError):
+                face_threshold = s["faceMatchThreshold"]
+            notify_email = (b.get("adminNotifyEmail") or "").strip()
+            if notify_email and "@" not in notify_email:
+                return self.error_json(400, "The admin notification address is not a valid email.")
             update_settings(
                 applicationSlug=slug, atsKeywords=keywords, atsThreshold=threshold,
-                interviewLinkDays=link_days,
+                interviewLinkDays=link_days, faceMatchThreshold=face_threshold,
+                adminNotifyEmail=notify_email,
                 interviewRoleTitle=(b.get("interviewRoleTitle") or s["interviewRoleTitle"]).strip(),
                 autoSendOnSubmit=bool(b.get("autoSendOnSubmit")),
                 rejectionSubject=(b.get("rejectionSubject") or s["rejectionSubject"]),
@@ -1883,7 +2112,12 @@ class Handler(BaseHTTPRequestHandler):
         if slug != settings["applicationSlug"]:
             return self.error_json(404, "This application link is no longer active.")
         if self.content_length() > MAX_UPLOAD_BYTES:
-            return self.error_json(413, "That upload is too large (max 8 MB total).")
+            # Deliberately answered without reading the body - that is the whole
+            # point of the cap - so the connection has to be closed rather than
+            # kept alive with an unread upload still queued behind it.
+            self.close_connection = True
+            return self.json({"error": "That upload is too large (max 8 MB total)."}, 413,
+                             extra={"Connection": "close"})
         fields, files = parse_multipart(self.body_bytes(), self.headers.get("Content-Type", ""))
 
         name = (fields.get("name") or "").strip()
@@ -1962,6 +2196,8 @@ class Handler(BaseHTTPRequestHandler):
                 "hasVerification": bool(c["verificationPhoto"]),
                 "needsAadhaar": bool(aadhaar_source(c)),
                 "aadhaarVerified": bool(c["aadhaarVerified"]),
+                "faceMatchStatus": (c.get("faceMatch") or {}).get("status"),
+                "identityBlocked": bool(c["identityBlocked"]),
             })
 
         if action == "verify-aadhaar" and method == "POST":
@@ -1998,11 +2234,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.json({"ok": True, "verified": True})
 
         if action == "verification" and method == "POST":
+            # The photo is read off the wire before any guard runs: replying while
+            # the client is still uploading megabytes leaves it writing into a
+            # socket nobody is draining, which surfaces as a broken pipe.
+            photo_bytes = self.body_bytes()
             if c["status"] not in ("invited", "in_progress"):
                 return self.error_json(409, "This interview is already closed.")
+            if c["identityBlocked"]:
+                return self.error_json(403, "Identity verification has failed too many times on this "
+                                            "attempt. Contact the hiring team to have it reset.")
             stored = f"{c['id']}-{new_id(3)}.jpg"
             with open(os.path.join(VERIFICATIONS, stored), "wb") as f:
-                f.write(self.body_bytes())
+                f.write(photo_bytes)
             old = c.get("verificationPhoto")
             c["verificationPhoto"] = stored
             save()
@@ -2011,7 +2254,51 @@ class Handler(BaseHTTPRequestHandler):
                     os.remove(os.path.join(VERIFICATIONS, old))
                 except OSError:
                     pass
-            return self.json({"ok": True})
+
+            app = find_application(c["applicationId"]) if c.get("applicationId") else None
+            if not (app and app.get("photoFile")):
+                # Hand-added candidate, or one who applied before photos were collected:
+                # there is no registered photo to match against.
+                return self.json({"ok": True, "faceMatch": None})
+
+            settings = get_settings()
+            result = compare_faces(
+                os.path.join(PHOTOS, app["photoFile"]),
+                os.path.join(VERIFICATIONS, stored),
+                settings.get("faceMatchThreshold"),
+            )
+            c["faceAttempts"] += 1
+            c["faceMatch"] = result
+            attempts_left = MAX_FACE_ATTEMPTS - c["faceAttempts"]
+
+            if result["status"] == "failed":
+                c["identityBlocked"] = attempts_left <= 0
+                c["violations"].append({
+                    "type": "identity_verification_failed",
+                    "detail": (f"Interview photo did not match the application photo "
+                               f"(similarity {result.get('score')}, threshold {result.get('threshold')}, "
+                               f"attempt {c['faceAttempts']})."),
+                    "at": now_iso(), "atQuestion": 0,
+                })
+                save()
+                host = self.headers.get("Host") or f"localhost:{CFG['port']}"
+                threading.Thread(
+                    target=notify_identity_failure,
+                    args=(c, result, c["identityBlocked"], f"http://{host}"),
+                    daemon=True,
+                ).start()
+                message = ("The photo you just took does not match the photo submitted with your "
+                           "application, so the interview cannot start.")
+                if attempts_left > 0:
+                    message += (f" Make sure your own face is clearly lit and facing the camera, then "
+                                f"try again. {attempts_left} attempt{'s' if attempts_left != 1 else ''} left.")
+                else:
+                    message += " You have no attempts left. The hiring team has been notified."
+                return self.json({"ok": False, "faceMatch": result, "attemptsLeft": max(0, attempts_left),
+                                  "error": message}, status=403)
+
+            save()
+            return self.json({"ok": True, "faceMatch": result})
 
         if action == "evidence" and method == "POST":
             if c["status"] != "in_progress":
@@ -2031,6 +2318,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error_json(400, "Identity verification photo is required before the interview can start.")
             if aadhaar_source(c) and not c["aadhaarVerified"]:
                 return self.error_json(400, "Your Aadhaar number must be verified before the interview can start.")
+            if (c.get("faceMatch") or {}).get("status") == "failed":
+                return self.error_json(403, "Identity verification failed: the interview photo does not "
+                                            "match the photo on your application. The interview cannot "
+                                            "start. Contact the hiring team.")
             if c["status"] == "invited":
                 # An attempt already under way is never cut off mid-interview; only a
                 # fresh start has to fall inside the link's validity window.

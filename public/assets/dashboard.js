@@ -115,10 +115,15 @@ async function load() {
 $('#listWrap').addEventListener('click', onRowClick);
 
 function row(c) {
+  const idBadge = c.identityStatus === 'failed'
+    ? '<span class="pill terminated" style="margin-left:6px" title="Face did not match the application photo">ID failed</span>'
+    : c.identityStatus === 'review'
+      ? '<span class="pill invited" style="margin-left:6px" title="Face match needs manual review">ID review</span>'
+      : '';
   return `<tr>
     <td class="name-cell"><b>${esc(c.name)}</b><span>${esc(c.email || c.id)}</span></td>
     <td>${esc(c.role)}</td>
-    <td><span class="pill ${c.status}">${STATUS[c.status]}</span></td>
+    <td><span class="pill ${c.status}">${STATUS[c.status]}</span>${idBadge}</td>
     <td class="mono" style="font-size:13px">${c.totalQuestions ? `${c.answered}/${c.totalQuestions}` : '—'}</td>
     <td class="mono" style="font-size:14px">${c.overall == null ? '—' : c.overall}</td>
     <td class="mono" style="font-size:13px;${c.violations ? 'color:var(--record)' : 'color:var(--graphite)'}">${c.violations || 0}</td>
@@ -248,6 +253,18 @@ $('#detailBody').addEventListener('click', async (e) => {
     if (e.target.id === 'editBtn') {
       openEdit(CACHE.find((x) => x.id === id) || {});
     }
+    if (e.target.id === 'faceMatchBtn') {
+      e.target.disabled = true;
+      e.target.textContent = 'Comparing photos…';
+      try {
+        await api(`/api/admin/candidates/${id}/face-match`, { method: 'POST' });
+        showDetail(id);
+      } catch (e2) {
+        alert(e2.message);
+        e.target.disabled = false;
+        e.target.textContent = 'Re-run face match';
+      }
+    }
     if (e.target.id === 'copyDetail') {
       navigator.clipboard.writeText($('#detailLink').value);
       e.target.textContent = 'Copied';
@@ -296,8 +313,30 @@ function detailHtml(c) {
   // Side-by-side identity check: what they submitted when they applied vs. what
   // they proved at the start of the interview.
   const app = c.application;
-  const identity = app ? `<div class="card">
-    <h3>Identity check against application</h3>
+  const fm = c.faceMatch;
+  const FACE_LABEL = { verified: 'Face matched', failed: 'Identity verification failed', review: 'Needs manual review' };
+  const faceBlock = !app ? '' : `
+    <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">
+      <dl class="kv">
+        <dt>Face match</dt><dd>${
+          !fm
+            ? '<span style="color:var(--graphite)">Not checked yet — no interview photo taken</span>'
+            : `<span class="pill ${fm.status === 'verified' ? 'in_progress' : fm.status === 'failed' ? 'terminated' : 'invited'}">${FACE_LABEL[fm.status] || esc(fm.status)}</span>`
+        }</dd>
+        ${fm ? `
+        <dt>Confidence score</dt><dd class="mono">${
+          fm.score == null ? '—' : `${fm.score} <span style="color:var(--graphite);font-size:12.5px">(needs ≥ ${fm.threshold})</span>`
+        }</dd>
+        <dt>Checked at</dt><dd>${fmtDate(fm.checkedAt)}</dd>
+        <dt>Attempts used</dt><dd class="mono">${c.faceAttempts} of ${c.maxFaceAttempts}${c.identityBlocked ? ' <span class="tag-bad">— locked out</span>' : ''}</dd>
+        <dt>Detail</dt><dd style="font-size:13.5px">${esc(fm.detail || '')}</dd>` : ''}
+      </dl>
+      <button class="btn ghost sm" id="faceMatchBtn" style="margin-top:12px">${fm ? 'Re-run face match' : 'Run face match'}</button>
+      ${c.identityBlocked ? '<p class="hint" style="margin:10px 0 0">This attempt is locked. A passing re-run clears it, or use <b>Reset attempt</b> to let the candidate start over.</p>' : ''}
+    </div>`;
+
+  const identity = app ? `<div class="card"${fm && fm.status === 'failed' ? ' style="border-color:#e6c4bf"' : ''}>
+    <h3${fm && fm.status === 'failed' ? ' style="color:var(--record)"' : ''}>Identity check against application</h3>
     <dl class="kv">
       <dt>Aadhaar on application</dt><dd class="mono">${esc(app.aadhaarMasked || '—')}</dd>
       <dt>Aadhaar entered at interview</dt><dd>${
@@ -325,6 +364,7 @@ function detailHtml(c) {
       </div>` : ''}
     </div>
     ${app.hasPhoto && c.hasVerification ? '<p class="hint" style="margin:12px 0 0">Compare the two photos above to confirm the same person applied and sat the interview.</p>' : ''}
+    ${faceBlock}
   </div>` : '';
 
   const flags = c.violations.length ? `<div class="card" style="border-color:#e6c4bf">
@@ -676,6 +716,8 @@ function openSettings(settings) {
   f.elements.atsThreshold.value = settings.atsThreshold;
   f.elements.interviewRoleTitle.value = settings.interviewRoleTitle;
   f.elements.interviewLinkDays.value = settings.interviewLinkDays;
+  f.elements.faceMatchThreshold.value = settings.faceMatchThreshold;
+  f.elements.adminNotifyEmail.value = settings.adminNotifyEmail || '';
   f.elements.autoSendOnSubmit.checked = !!settings.autoSendOnSubmit;
   f.elements.rejectionSubject.value = settings.rejectionSubject;
   f.elements.rejectionBody.value = settings.rejectionBody;
@@ -723,6 +765,8 @@ $('#settingsForm').addEventListener('submit', async (e) => {
     atsThreshold: Number(f.elements.atsThreshold.value),
     interviewRoleTitle: f.elements.interviewRoleTitle.value.trim(),
     interviewLinkDays: Number(f.elements.interviewLinkDays.value),
+    faceMatchThreshold: Number(f.elements.faceMatchThreshold.value),
+    adminNotifyEmail: f.elements.adminNotifyEmail.value.trim(),
     autoSendOnSubmit: f.elements.autoSendOnSubmit.checked,
     rejectionSubject: f.elements.rejectionSubject.value,
     rejectionBody: f.elements.rejectionBody.value,
