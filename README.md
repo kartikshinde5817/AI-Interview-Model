@@ -73,15 +73,39 @@ hiring funnel:
   **Reveal** action), the resume download, and the ATS score with matched keywords.
 - **Automatic decision emails** — clicking **Process** on a record compares its ATS score to
   the configured pass threshold: at or above, an interview candidate is created and the
-  existing invitation-email flow fires; below, an editable rejection email is sent instead.
+  invitation email fires; below, an editable rejection email is sent instead.
   Turning on **auto-send** in settings fires this the instant someone applies, with no click
   needed.
 - **Editable from the dashboard**: the application link/slug, the ATS keyword list and
-  threshold, the position title used on auto-created interview invites, and the rejection
-  email subject/body (supports `{{name}}` and `{{role}}` placeholders).
+  threshold, the position title used on auto-created interview invites, how many days the
+  interview link stays valid, and the rejection email subject/body (supports `{{name}}` and
+  `{{role}}` placeholders).
 
 Aadhaar numbers are encrypted at rest and never returned by the list or detail endpoints —
 only the dedicated reveal action (admin session required) decrypts one on demand.
+
+### Shortlisted → interview
+
+A shortlisted applicant's interview link **expires 3 days after they are shortlisted**
+(configurable in settings). Once expired the link stops working at sign-in, not just at start.
+
+The invitation email spells out, before the candidate begins:
+
+- the exact expiry date and time of their link,
+- that they must have their **original Aadhaar card** with them, type its 12-digit number
+  (checked against their application, five attempts) and photograph themselves holding it,
+- and every proctoring rule — one device and one screen only, no second person or second
+  voice, no switching windows or tabs or leaving full screen, copy/paste disabled, and camera
+  and microphone recorded throughout — along with what happens when each is broken.
+
+At the start of the interview the candidate must therefore pass two identity gates before any
+question is shown: the Aadhaar number check and the live verification photo. In the admin
+panel, the candidate's record grows an **Identity check against application** card putting the
+photo they submitted when applying next to the live photo taken at the interview, alongside the
+Aadhaar match result and any failed attempts (which are also logged as integrity flags).
+
+Candidates added by hand rather than through the application form have no Aadhaar on file, so
+they skip the Aadhaar gate and keep the original photo-only verification.
 
 ---
 

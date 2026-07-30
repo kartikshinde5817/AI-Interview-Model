@@ -38,7 +38,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import parseaddr
@@ -147,6 +147,7 @@ SETTINGS_DEFAULTS = {
     ],
     "atsThreshold": 60,
     "interviewRoleTitle": "Open position",
+    "interviewLinkDays": 3,    # shortlisted candidates get a link that expires this many days later
     "autoSendOnSubmit": False,
     "rejectionSubject": "Your application update - {{role}}",
     "rejectionBody": (
@@ -174,6 +175,7 @@ CANDIDATE_DEFAULTS = {
     "recording": None, "recordingBytes": 0, "violations": [], "cursor": 0,
     "report": None, "generatedBy": None, "notes": "", "resumeText": "", "resumeFile": None,
     "scheduleStart": None, "scheduleEnd": None, "username": None, "password": None,
+    "applicationId": None, "aadhaarVerified": False, "aadhaarAttempts": 0,
 }
 
 _USERNAME_ADJ = ["swift", "bright", "calm", "keen", "bold", "quiet", "quick", "sharp", "clear", "steady"]
@@ -278,6 +280,9 @@ def create_candidate(**kw):
         "generatedBy": None,
         "username": gen_username(),
         "password": gen_password(),
+        "applicationId": kw.get("applicationId"),
+        "aadhaarVerified": False,
+        "aadhaarAttempts": 0,
     }
     with _lock:
         _state["candidates"].insert(0, c)
@@ -350,17 +355,26 @@ def delete_application(aid):
     return True
 
 
+def as_aware(dt):
+    """Dates typed into the admin's date pickers are naive and mean local time;
+    the expiry stamps we generate ourselves are already UTC-aware. Normalising
+    here lets the two be compared without blowing up."""
+    return dt if dt.tzinfo else dt.astimezone()
+
+
 def schedule_error(c):
     """None if the interview link is currently within its scheduled window, else an error message."""
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     start = c.get("scheduleStart")
     end = c.get("scheduleEnd")
     try:
-        if start and now < datetime.fromisoformat(start):
+        if start and now < as_aware(datetime.fromisoformat(start)):
             return f"This interview link is not active yet. It opens on {fmt_schedule(start)}."
-        if end and now > datetime.fromisoformat(end):
-            return f"This interview link expired on {fmt_schedule(end)}. Contact the hiring team for a new one."
-    except ValueError:
+        if end and now > as_aware(datetime.fromisoformat(end)):
+            return (f"This interview link expired on {fmt_schedule(end)}. "
+                    "Interview links stay valid for a limited time only. "
+                    "Contact the hiring team if you need a new one.")
+    except (ValueError, TypeError):
         pass
     return None
 
@@ -374,9 +388,12 @@ def fmt_schedule(iso_str):
     if not iso_str:
         return None
     try:
-        return datetime.fromisoformat(iso_str).strftime("%d %b %Y, %I:%M %p")
+        dt = datetime.fromisoformat(iso_str)
     except ValueError:
         return iso_str
+    if dt.tzinfo:
+        dt = dt.astimezone()          # show the hiring team's local time, not raw UTC
+    return dt.strftime("%d %b %Y, %I:%M %p")
 
 
 # --------------------------------------------------------------------------- #
@@ -432,6 +449,40 @@ def decrypt_aadhaar(token):
         return ""
 
 
+INTERVIEW_PREP = [
+    "Keep your original Aadhaar card with you. Before the interview opens you must type your "
+    "12-digit Aadhaar number, and it has to match the number you gave on your application. "
+    "You get five attempts.",
+    "You will then be asked to take a live photo of yourself holding that Aadhaar card next to "
+    "your face, so the hiring team can check it against the photo you submitted when you applied.",
+    "Use a laptop or desktop with a working camera and microphone. A phone or tablet will not do.",
+    "Sit alone in a quiet, well-lit room with about 40 minutes free and your face clearly visible.",
+    "Close every other application, window and browser tab before you begin.",
+]
+
+INTERVIEW_RULES = [
+    ("One device, one screen",
+     "Take the interview on a single laptop or desktop screen. If a phone, tablet, second monitor "
+     "or any other device is seen in the camera, you are warned - and after three warnings the "
+     "interview ends and is recorded as a fail."),
+    ("You must be completely alone",
+     "Only your own face may appear in the camera, and only your own voice may be heard. If a "
+     "second face is detected, or a second voice is picked up along with yours, you are warned - "
+     "and again, three warnings ends the interview as a fail."),
+    ("Never leave the interview window",
+     "Switching to another tab, window or application, clicking away from the interview, leaving "
+     "full screen, or reloading or closing the page ends your interview immediately. It is then "
+     "submitted exactly as it stands and you cannot restart it."),
+    ("Copying is disabled",
+     "Copy, cut, paste, right-click, keyboard shortcuts and the browser developer tools are all "
+     "blocked for the whole interview."),
+    ("Camera and microphone record throughout",
+     "Both are recorded continuously from the moment you start until the interview ends, and the "
+     "recording is reviewed by the hiring team. If you refuse camera or microphone access, the "
+     "interview cannot begin."),
+]
+
+
 def build_invitation_content(c, base_url):
     link = f"{base_url}/i/{c['token']}"
     login_user = c.get("username") or CFG["candidate_user"]
@@ -439,43 +490,86 @@ def build_invitation_content(c, base_url):
     start_txt = fmt_schedule(c.get("scheduleStart"))
     end_txt = fmt_schedule(c.get("scheduleEnd"))
     if start_txt and end_txt:
-        note = f"You are only allowed to take this interview between {start_txt} and {end_txt}. The link will not work outside that window."
+        note = (f"This link only works between {start_txt} and {end_txt}. "
+                "Once that window closes the link stops working for good.")
     elif start_txt:
-        note = f"You are allowed to take this interview starting {start_txt}. The link will not work before that."
+        note = f"This link opens on {start_txt}. It will not work before then."
     elif end_txt:
-        note = f"You are allowed to take this interview any time up to {end_txt}. The link will not work after that."
+        note = (f"This link expires on {end_txt}. Finish your interview before then - "
+                "once it expires the link stops working and you will need to ask the "
+                "hiring team for a new one.")
     else:
         note = "This link is active as soon as you receive it."
 
+    prep_text = "\n".join(f"  - {item}" for item in INTERVIEW_PREP)
+    rules_text = "\n\n".join(
+        f"  {i}. {title.upper()}\n     {body}" for i, (title, body) in enumerate(INTERVIEW_RULES, 1))
+
     text_body = f"""Hi {c['name']},
 
-You have been invited to an AI-assisted interview for the {c['role']} position.
+You have been shortlisted for an AI-assisted interview for the {c['role']} position.
 
 Interview link: {link}
 Sign-in username: {login_user}
 Sign-in password: {login_pass}
 
-Note: {note}
+--------------------------------------------------------------------
+THIS LINK IS TIME-LIMITED
+--------------------------------------------------------------------
+{note}
 
-Before you begin, make sure you are on a laptop or desktop with a working camera and microphone,
-in a quiet, well-lit room, with about 40 minutes free.
+--------------------------------------------------------------------
+BEFORE YOU START - WHAT YOU NEED
+--------------------------------------------------------------------
+{prep_text}
+
+--------------------------------------------------------------------
+RULES DURING THE INTERVIEW - PLEASE READ CAREFULLY
+--------------------------------------------------------------------
+This interview is automatically proctored. Your camera and microphone are
+recorded, and the software watches for the things listed below. Breaking
+these rules can end your interview instantly, with no second attempt.
+
+{rules_text}
+
+If anything is unclear, reply to this email before you start rather than
+during the interview.
 
 Good luck!
 """
+
+    prep_html = "".join(f"<li style='margin-bottom:8px'>{esc_html(item)}</li>" for item in INTERVIEW_PREP)
+    rules_html = "".join(
+        f"<li style='margin-bottom:12px'><b>{esc_html(title)}</b><br>"
+        f"<span style='color:#333c47'>{esc_html(body)}</span></li>"
+        for title, body in INTERVIEW_RULES)
+
     html_body = f"""\
-<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#12161c;max-width:520px">
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#12161c;max-width:560px;line-height:1.55">
   <p>Hi {esc_html(c['name'])},</p>
-  <p>You have been invited to an AI-assisted interview for the <b>{esc_html(c['role'])}</b> position.</p>
+  <p>You have been shortlisted for an AI-assisted interview for the <b>{esc_html(c['role'])}</b> position.</p>
   <p style="margin:22px 0">
     <a href="{esc_html(link)}" style="background:#0e7a61;color:#fff;text-decoration:none;padding:11px 20px;border-radius:5px;display:inline-block">Open your interview</a>
   </p>
   <p style="font-size:13px;color:#626b75">Or copy this link: <a href="{esc_html(link)}">{esc_html(link)}</a></p>
   <p>Sign-in username: <b>{esc_html(login_user)}</b><br>Sign-in password: <b>{esc_html(login_pass)}</b></p>
-  <p style="background:#f8efd9;border-left:3px solid #b07d16;padding:10px 14px;margin:18px 0">
-    <b>Note:</b> {esc_html(note)}
+
+  <p style="background:#f8efd9;border-left:3px solid #b07d16;padding:12px 16px;margin:20px 0">
+    <b>This link is time-limited.</b><br>{esc_html(note)}
   </p>
-  <p>Before you begin, make sure you are on a laptop or desktop with a working camera and microphone,
-  in a quiet, well-lit room, with about 40 minutes free.</p>
+
+  <h3 style="font-size:15px;margin:26px 0 8px">Before you start &mdash; what you need</h3>
+  <ul style="padding-left:20px;margin:0">{prep_html}</ul>
+
+  <h3 style="font-size:15px;margin:26px 0 8px">Rules during the interview &mdash; please read carefully</h3>
+  <p style="background:#f8e7e4;border-left:3px solid #be3a2b;padding:12px 16px;margin:0 0 14px">
+    This interview is <b>automatically proctored</b>. Your camera and microphone are recorded, and the
+    software watches for everything listed below. Breaking these rules can end your interview
+    instantly, with no second attempt.
+  </p>
+  <ol style="padding-left:20px;margin:0">{rules_html}</ol>
+
+  <p style="margin-top:24px">If anything is unclear, reply to this email <i>before</i> you start rather than during the interview.</p>
   <p>Good luck!</p>
 </div>"""
     subject = f"Your interview invitation - {c['role']}"
@@ -617,9 +711,12 @@ def process_application(a, base_url):
     time when settings.autoSendOnSubmit is on."""
     settings = get_settings()
     if a["atsScore"] >= settings["atsThreshold"]:
+        days = max(1, int(settings.get("interviewLinkDays") or 3))
         c = create_candidate(
             name=a["name"], email=a["email"], role=settings["interviewRoleTitle"],
             resumeText=a["resumeText"], resumeFile=a["resumeFile"],
+            applicationId=a["id"],
+            scheduleEnd=(datetime.now(timezone.utc) + timedelta(days=days)).isoformat(),
         )
         ok, msg = send_invitation_email(c, base_url)
         a["candidateId"] = c["id"]
@@ -1228,6 +1325,16 @@ def application_view(a, full=False):
     return out
 
 
+MAX_AADHAAR_ATTEMPTS = 5
+
+
+def aadhaar_source(c):
+    """The application this interview grew out of, if it carries an Aadhaar number.
+    That number is the reference the candidate is checked against before starting."""
+    a = find_application(c["applicationId"]) if c.get("applicationId") else None
+    return a if (a and a.get("aadhaarEnc")) else None
+
+
 def slot1_len(c):
     return sum(1 for q in c["questions"] if q["slot"] == 1)
 
@@ -1476,11 +1583,21 @@ class Handler(BaseHTTPRequestHandler):
             c = find_candidate(m.group(1))
             if not c:
                 return self.error_json(404, "Candidate not found.")
+            app = find_application(c["applicationId"]) if c.get("applicationId") else None
             return self.json({**public_view(c), "notes": c["notes"], "resumeText": c["resumeText"],
                               "username": c["username"], "password": c["password"],
                               "resumeFile": c["resumeFile"], "generatedBy": c["generatedBy"],
                               "recordingBytes": c["recordingBytes"], "hasVerification": bool(c["verificationPhoto"]),
                               "evidenceShots": c["evidenceShots"],
+                              "applicationId": c["applicationId"],
+                              "aadhaarVerified": c["aadhaarVerified"],
+                              "aadhaarAttempts": c["aadhaarAttempts"],
+                              "application": {
+                                  "id": app["id"], "name": app["name"], "email": app["email"],
+                                  "mobile": app["mobile"], "atsScore": app["atsScore"],
+                                  "aadhaarMasked": f"XXXX XXXX {app['aadhaarLast4']}" if app["aadhaarLast4"] else "",
+                                  "hasPhoto": bool(app["photoFile"]),
+                              } if app else None,
                               "questions": c["questions"],
                               "answers": c["answers"], "violations": c["violations"], "report": c["report"]})
 
@@ -1620,8 +1737,13 @@ class Handler(BaseHTTPRequestHandler):
                 threshold = max(0, min(100, int(b.get("atsThreshold", s["atsThreshold"]))))
             except (TypeError, ValueError):
                 threshold = s["atsThreshold"]
+            try:
+                link_days = max(1, min(365, int(b.get("interviewLinkDays", s["interviewLinkDays"]))))
+            except (TypeError, ValueError):
+                link_days = s["interviewLinkDays"]
             update_settings(
                 applicationSlug=slug, atsKeywords=keywords, atsThreshold=threshold,
+                interviewLinkDays=link_days,
                 interviewRoleTitle=(b.get("interviewRoleTitle") or s["interviewRoleTitle"]).strip(),
                 autoSendOnSubmit=bool(b.get("autoSendOnSubmit")),
                 rejectionSubject=(b.get("rejectionSubject") or s["rejectionSubject"]),
@@ -1750,7 +1872,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.submit_application(m.group(1))
 
         # --- interview ---
-        m = re.fullmatch(r"/api/interview/([0-9a-f]+)/(\w+)", path)
+        m = re.fullmatch(r"/api/interview/([0-9a-f]+)/([\w\-]+)", path)
         if m:
             return self.interview_api(method, m.group(1), m.group(2))
 
@@ -1838,7 +1960,42 @@ class Handler(BaseHTTPRequestHandler):
                 "question": strip_question(c["questions"][c["cursor"]]) if c["status"] == "in_progress" and c["cursor"] < len(c["questions"]) else None,
                 "violations": c["violations"],
                 "hasVerification": bool(c["verificationPhoto"]),
+                "needsAadhaar": bool(aadhaar_source(c)),
+                "aadhaarVerified": bool(c["aadhaarVerified"]),
             })
+
+        if action == "verify-aadhaar" and method == "POST":
+            if c["status"] not in ("invited", "in_progress"):
+                return self.error_json(409, "This interview is already closed.")
+            app = aadhaar_source(c)
+            if not app:
+                # Nothing to check against (candidate added by hand, not via the form).
+                c["aadhaarVerified"] = True
+                save()
+                return self.json({"ok": True, "verified": True})
+            if c["aadhaarVerified"]:
+                return self.json({"ok": True, "verified": True})
+            if c["aadhaarAttempts"] >= MAX_AADHAAR_ATTEMPTS:
+                return self.error_json(429, "Too many incorrect Aadhaar attempts. Contact the hiring team.")
+            entered = re.sub(r"\D", "", (self.body_json().get("aadhaar") or ""))
+            if not re.fullmatch(r"\d{12}", entered):
+                return self.error_json(400, "Enter the 12-digit Aadhaar number from your card.")
+            c["aadhaarAttempts"] += 1
+            if not hmac.compare_digest(entered, decrypt_aadhaar(app["aadhaarEnc"])):
+                left = MAX_AADHAAR_ATTEMPTS - c["aadhaarAttempts"]
+                c["violations"].append({
+                    "type": "aadhaar_mismatch",
+                    "detail": f"Entered an Aadhaar number that does not match the application (attempt {c['aadhaarAttempts']}).",
+                    "at": now_iso(), "atQuestion": 0,
+                })
+                save()
+                if left <= 0:
+                    return self.error_json(429, "Too many incorrect Aadhaar attempts. Contact the hiring team.")
+                return self.error_json(400, "That Aadhaar number does not match the one on your application. "
+                                            f"{left} attempt{'s' if left != 1 else ''} left.")
+            c["aadhaarVerified"] = True
+            save()
+            return self.json({"ok": True, "verified": True})
 
         if action == "verification" and method == "POST":
             if c["status"] not in ("invited", "in_progress"):
@@ -1872,7 +2029,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error_json(409, "This interview is already closed.")
             if not c["verificationPhoto"]:
                 return self.error_json(400, "Identity verification photo is required before the interview can start.")
+            if aadhaar_source(c) and not c["aadhaarVerified"]:
+                return self.error_json(400, "Your Aadhaar number must be verified before the interview can start.")
             if c["status"] == "invited":
+                # An attempt already under way is never cut off mid-interview; only a
+                # fresh start has to fall inside the link's validity window.
+                err = schedule_error(c)
+                if err:
+                    return self.error_json(403, err)
                 try:
                     questions, source = build_paper(c)
                 except Exception:  # noqa: BLE001

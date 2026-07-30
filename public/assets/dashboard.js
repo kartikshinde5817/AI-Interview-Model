@@ -226,6 +226,14 @@ let DETAIL_ID = null;
 $('#detailBody').addEventListener('click', async (e) => {
   const id = DETAIL_ID;
   if (!id) return;
+  const toApp = e.target.closest('[data-open-app]');
+  if (toApp) {
+    e.preventDefault();
+    closeDetail();
+    selectPane('applications');
+    showAppDetail(toApp.dataset.openApp);
+    return;
+  }
   {
     if (e.target.id === 'delBtn') {
       if (!confirm('Delete this candidate, their transcript and their recording? This cannot be undone.')) return;
@@ -270,7 +278,7 @@ function detailHtml(c) {
       ${c.resumeFile ? `<dt>Resume file</dt><dd><a href="/api/admin/candidates/${c.id}/resume">Download</a></dd>` : ''}
       <dt>ID verification</dt><dd>${c.hasVerification ? 'Captured' : '<span style="color:var(--graphite)">Not captured</span>'}</dd>
     </dl>
-    ${c.hasVerification ? `
+    ${c.hasVerification && !c.application ? `
     <a href="/api/admin/candidates/${c.id}/verification" target="_blank" style="display:inline-block;margin-top:12px">
       <img src="/api/admin/candidates/${c.id}/verification" alt="ID verification photo" style="max-width:220px;border-radius:4px;border:1px solid var(--line);display:block">
     </a>` : ''}
@@ -284,6 +292,40 @@ function detailHtml(c) {
       <button class="btn danger sm" id="delBtn">Delete candidate</button>
     </div>
   </div>`;
+
+  // Side-by-side identity check: what they submitted when they applied vs. what
+  // they proved at the start of the interview.
+  const app = c.application;
+  const identity = app ? `<div class="card">
+    <h3>Identity check against application</h3>
+    <dl class="kv">
+      <dt>Aadhaar on application</dt><dd class="mono">${esc(app.aadhaarMasked || '—')}</dd>
+      <dt>Aadhaar entered at interview</dt><dd>${
+        c.aadhaarVerified
+          ? '<span class="tag-ok">Matched</span>'
+          : `<span class="tag-bad">Not verified</span>${c.aadhaarAttempts ? ` <span class="mono" style="font-size:12.5px;color:var(--graphite)">(${c.aadhaarAttempts} failed attempt${c.aadhaarAttempts === 1 ? '' : 's'})</span>` : ''}`
+      }</dd>
+      <dt>Name on application</dt><dd>${esc(app.name)}${app.name !== c.name ? ' <span class="tag-bad">differs from candidate record</span>' : ''}</dd>
+      <dt>Mobile on application</dt><dd class="mono">${esc(app.mobile || '—')}</dd>
+      <dt>Application ATS score</dt><dd class="mono">${app.atsScore}</dd>
+      <dt>Full application</dt><dd><a href="#" data-open-app="${app.id}">Open application record</a></dd>
+    </dl>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:14px">
+      ${app.hasPhoto ? `<div>
+        <span class="hint" style="display:block;margin:0 0 6px">Photo submitted when applying</span>
+        <a href="/api/admin/applications/${app.id}/photo" target="_blank">
+          <img src="/api/admin/applications/${app.id}/photo" alt="Photo from application" style="max-width:200px;border-radius:4px;border:1px solid var(--line);display:block">
+        </a>
+      </div>` : ''}
+      ${c.hasVerification ? `<div>
+        <span class="hint" style="display:block;margin:0 0 6px">Live photo taken at the interview</span>
+        <a href="/api/admin/candidates/${c.id}/verification" target="_blank">
+          <img src="/api/admin/candidates/${c.id}/verification" alt="Live verification photo" style="max-width:200px;border-radius:4px;border:1px solid var(--line);display:block">
+        </a>
+      </div>` : ''}
+    </div>
+    ${app.hasPhoto && c.hasVerification ? '<p class="hint" style="margin:12px 0 0">Compare the two photos above to confirm the same person applied and sat the interview.</p>' : ''}
+  </div>` : '';
 
   const flags = c.violations.length ? `<div class="card" style="border-color:#e6c4bf">
     <h3 style="color:var(--record)">Integrity flags</h3>
@@ -367,7 +409,7 @@ function detailHtml(c) {
     }).join('')}
   </div>` : '';
 
-  return overview + flags + evidence + report + recording + slot1 + slot2;
+  return overview + identity + flags + evidence + report + recording + slot1 + slot2;
 }
 
 /* ---------------- edit profile ---------------- */
@@ -633,6 +675,7 @@ function openSettings(settings) {
   f.elements.applicationSlug.value = settings.applicationSlug;
   f.elements.atsThreshold.value = settings.atsThreshold;
   f.elements.interviewRoleTitle.value = settings.interviewRoleTitle;
+  f.elements.interviewLinkDays.value = settings.interviewLinkDays;
   f.elements.autoSendOnSubmit.checked = !!settings.autoSendOnSubmit;
   f.elements.rejectionSubject.value = settings.rejectionSubject;
   f.elements.rejectionBody.value = settings.rejectionBody;
@@ -679,6 +722,7 @@ $('#settingsForm').addEventListener('submit', async (e) => {
     atsKeywords,
     atsThreshold: Number(f.elements.atsThreshold.value),
     interviewRoleTitle: f.elements.interviewRoleTitle.value.trim(),
+    interviewLinkDays: Number(f.elements.interviewLinkDays.value),
     autoSendOnSubmit: f.elements.autoSendOnSubmit.checked,
     rejectionSubject: f.elements.rejectionSubject.value,
     rejectionBody: f.elements.rejectionBody.value,

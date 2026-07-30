@@ -71,10 +71,26 @@
         <button class="btn ghost" id="deviceBtn">Connect camera and microphone</button>
       </div>
 
-      <!-- ---- step 2: identity verification ---- -->
+      <!-- ---- step 2a: Aadhaar number check ---- -->
+      <div id="aadhaarPanel" class="hide" style="margin-top:22px">
+        <h2>Aadhaar verification</h2>
+        <p>Type the 12-digit Aadhaar number exactly as it appears on the card you used when you
+          applied. Keep the original card with you — you will need to hold it up in the next step.</p>
+        <label class="field" style="max-width:320px">
+          <span>Aadhaar number</span>
+          <input id="aadhaarInput" inputmode="numeric" maxlength="12" placeholder="12-digit number" autocomplete="off">
+        </label>
+        <div id="aadhaarErr" class="banner hide"></div>
+        <div class="qfoot">
+          <span class="note">This is checked against your application. You have 5 attempts.</span>
+          <button class="btn go" id="aadhaarBtn" type="button">Verify Aadhaar number</button>
+        </div>
+      </div>
+
+      <!-- ---- step 2b: identity verification ---- -->
       <div id="verifyPanel" class="hide" style="margin-top:22px">
         <h2>Identity verification</h2>
-        <p id="verifyInstr">Hold your ID card next to your face so both your face and the card are clearly visible, then capture your verification photo.</p>
+        <p id="verifyInstr">Hold your Aadhaar card next to your face so both your face and the card are clearly visible, then capture your verification photo.</p>
         <div class="verify-row">
           <div class="verify-col">
             <video id="verifyVideo" class="preview" autoplay muted playsinline></video>

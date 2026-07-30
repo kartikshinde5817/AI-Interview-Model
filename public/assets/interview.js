@@ -30,6 +30,7 @@ const S = {
   slot1Left: 0, slot1Time: 1200, inSlot1: true, qLeft: 0, tick: null, armed: false, ended: false,
   qStarted: 0, recBytes: 0, listening: false, recog: null, recogGen: 0, transcript: '',
   verifyStream: null, verifyShot: null, faceTimer: null, voiceTimer: null, deviceTimer: null,
+  needsAadhaar: false, aadhaarOk: false,
   strikes: { device: 0, voice: 0 }, lastStrikeAt: { device: 0, voice: 0 },
   gameSeq: [], gamePick: [], gamePlaying: false, pendingNext: null, isLast: false,
 };
@@ -71,6 +72,8 @@ async function boot() {
   S.slot1Left = st.slot1RemainingSec;
   S.slot1Time = st.slot1TimeSec;
   S.inSlot1 = st.inSlot1;
+  S.needsAadhaar = !!st.needsAadhaar;
+  S.aadhaarOk = !!st.aadhaarVerified;
 
   if (st.status === 'completed') {
     finished('Interview Submitted Successfully', 'Your final responses have been saved. Scoring your interview…', '✓');
@@ -107,7 +110,7 @@ function fillGuidelines(st) {
   $('#planGrid').innerHTML = [
     ['Slot 1 · Interview', `${p.slot1} questions`, `${Math.round(st.slot1TimeSec / 60)}-minute clock, up to ${Math.round(p.qTimeInterview / 60)} min each, asked and answered by AI voice`],
     ['Slot 2 · Reasoning', `${p.slot2} questions`, `${p.qTimeReasoning}s each, multiple choice, text only`],
-    ['Verification', 'ID photo + mic check', 'Required before Slot 1 begins'],
+    ['Verification', st.needsAadhaar ? 'Aadhaar + photo + mic' : 'ID photo + mic check', 'Required before Slot 1 begins'],
     ['Proctoring', 'Camera and mic on', 'Full screen, single window, recorded'],
   ].map(([t, v, d]) => `<div class="plan-cell"><div class="t">${t}</div><div class="v">${esc(v)}</div><div class="d">${esc(d)}</div></div>`).join('');
 
@@ -116,7 +119,9 @@ function fillGuidelines(st) {
     + `Slot two has ${p.slot2} multiple choice questions and is fully text based. `
     + `Your camera and microphone must stay on the whole time, and the session is recorded. `
     + `Leaving full screen, switching windows, or opening another application ends the interview immediately. `
-    + `Before slot one begins, you will be asked to verify your identity with a photo of yourself holding your I D card, and to read a sentence aloud to test your microphone. `
+    + (st.needsAadhaar
+      ? `Before slot one begins, you must type the twelve digit Aadhaar number from the card you applied with, take a photo of yourself holding that card, and read a sentence aloud to test your microphone. Keep your original Aadhaar card with you now. `
+      : `Before slot one begins, you will be asked to verify your identity with a photo of yourself holding your I D card, and to read a sentence aloud to test your microphone. `)
     + `You can clear and re-record a spoken answer before moving on, and you can submit the interview early at any time using the submit button, with a confirmation step. `
     + `Please connect your camera and microphone to continue.`;
   $('#replayInstr').onclick = () => speak(instructions);
@@ -202,10 +207,55 @@ function buildRecorder() {
 
 function beginVerification() {
   $('#deviceBtn').closest('.qfoot').classList.add('hide');
+  // Candidates who came through the application form prove the Aadhaar number
+  // they applied with before they are allowed to photograph the card.
+  if (S.needsAadhaar && !S.aadhaarOk) {
+    $('#aadhaarPanel').classList.remove('hide');
+    $('#aadhaarInput').focus();
+    speak('First, please type the twelve digit Aadhaar number from the card you applied with.');
+    return;
+  }
+  beginPhotoVerification();
+}
+
+function beginPhotoVerification() {
   $('#verifyPanel').classList.remove('hide');
   $('#verifyVideo').srcObject = S.stream;
-  speak('Please hold your I D card next to your face so both are clearly visible, then press capture verification photo.');
+  speak('Please hold your Aadhaar card next to your face so both are clearly visible, then press capture verification photo.');
 }
+
+$('#aadhaarInput').addEventListener('input', (e) => {
+  e.target.value = e.target.value.replace(/\D/g, '').slice(0, 12);
+});
+
+$('#aadhaarBtn').addEventListener('click', async () => {
+  const err = $('#aadhaarErr');
+  const btn = $('#aadhaarBtn');
+  err.className = 'banner hide';
+  const value = $('#aadhaarInput').value.replace(/\D/g, '');
+  if (value.length !== 12) {
+    err.className = 'banner';
+    err.textContent = 'Enter all 12 digits of your Aadhaar number.';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Verifying…';
+  try {
+    await api('/verify-aadhaar', { aadhaar: value });
+    S.aadhaarOk = true;
+    $('#aadhaarInput').disabled = true;
+    btn.classList.add('hide');
+    err.className = 'banner go';
+    err.textContent = 'Aadhaar number verified. Now capture your verification photo.';
+    beginPhotoVerification();
+  } catch (e) {
+    err.className = 'banner';
+    err.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Verify Aadhaar number';
+  }
+});
 
 $('#captureBtn').addEventListener('click', async () => {
   const err = $('#verifyErr');

@@ -253,6 +253,8 @@
         <button class="btn ghost sm" type="button" id="addKeywordBtn" style="margin-top:6px">Add keyword</button>
         <label class="field" style="margin-top:16px"><span>Pass threshold (0-100)</span><input name="atsThreshold" type="number" min="0" max="100" required></label>
         <label class="field"><span>Position title used for interview invites</span><input name="interviewRoleTitle" required></label>
+        <label class="field"><span>Interview link valid for (days)</span><input name="interviewLinkDays" type="number" min="1" max="365" required></label>
+        <p class="hint">Shortlisted candidates get a link that stops working this many days after they are shortlisted.</p>
         <label class="field" style="display:flex;align-items:center;gap:8px;flex-direction:row">
           <input name="autoSendOnSubmit" type="checkbox" style="width:auto">
           <span style="margin:0;text-transform:none;font-family:inherit;font-size:14px;letter-spacing:0">Automatically email the decision the moment someone applies (otherwise, click Process in the application record)</span>
