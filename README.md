@@ -4,13 +4,15 @@ A proctored, two-slot interview platform. One dashboard holds both panels: the a
 candidate and their resume, sends one link, and gets back a transcript, an auto-scored
 assessment and the session recording.
 
-Backend and frontend run from **one file, one command, no installs**.
+Backend and frontend run from **one file, one command**. A public application form feeds a
+rule-based ATS screen that automatically emails candidates an interview link or a rejection.
 
 ---
 
 ## Run it
 
 ```bash
+pip install -r requirements.txt
 python main.py
 ```
 
@@ -21,7 +23,8 @@ Open **http://localhost:8000**
 | Administrator | `admin` | `admin123` |
 | Candidate | `user` | `user123` |
 
-Python 3.9 or newer. Nothing to `pip install` — the server uses only the standard library.
+Python 3.9 or newer. `requirements.txt` adds PDF/DOCX resume parsing (`pypdf`,
+`python-docx`) and Aadhaar encryption (`cryptography`) — everything else is standard library.
 
 To turn on AI-written questions and AI scoring:
 
@@ -50,6 +53,35 @@ category mix, and the objective section is still scored automatically.
 **Candidate** → paste the invitation link (or just the code at the end of it), sign in with
 `user` / `user123`, and the interview opens. Candidates who click the link directly land on
 the same sign-in without needing the code.
+
+---
+
+## Job applications
+
+Inside the admin panel, the **Applications** tab holds everything for the public-facing
+hiring funnel:
+
+- **Application link** — a single public form at `/apply/<slug>`. Anyone with the link can
+  submit Name, Mobile Number, Aadhaar Number, Email, Photo and Resume (PDF/DOC/DOCX/TXT/MD,
+  8 MB max). The slug is editable from **ATS & email settings** — changing it immediately
+  invalidates the old link.
+- **ATS scoring** — rule-based: the resume text is checked against an admin-editable list of
+  keywords, each with a weight. The score is the percentage of configured weight matched.
+  PDF and DOCX resumes are parsed automatically (`pypdf` / `python-docx`).
+- **Review** — search/filter applications by name, email, mobile, status or score range. Each
+  record shows the photo, a masked Aadhaar number (`XXXX XXXX 1234`, with an explicit
+  **Reveal** action), the resume download, and the ATS score with matched keywords.
+- **Automatic decision emails** — clicking **Process** on a record compares its ATS score to
+  the configured pass threshold: at or above, an interview candidate is created and the
+  existing invitation-email flow fires; below, an editable rejection email is sent instead.
+  Turning on **auto-send** in settings fires this the instant someone applies, with no click
+  needed.
+- **Editable from the dashboard**: the application link/slug, the ATS keyword list and
+  threshold, the position title used on auto-created interview invites, and the rejection
+  email subject/body (supports `{{name}}` and `{{role}}` placeholders).
+
+Aadhaar numbers are encrypted at rest and never returned by the list or detail endpoints —
+only the dedicated reveal action (admin session required) decrypts one on demand.
 
 ---
 

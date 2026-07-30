@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Job Application</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+
+<div class="gate">
+  <div class="gate-card" style="max-width:440px">
+    <div class="eyebrow">Careers</div>
+    <h1>Apply now</h1>
+    <p class="sub">Fill in your details and upload your resume. We'll review your application and email you the next step.</p>
+
+    <div id="applyErr" class="err hide"></div>
+
+    <form id="applyForm">
+      <label class="field"><span>Full name</span><input name="name" required autocomplete="name"></label>
+      <label class="field"><span>Mobile number</span><input name="mobile" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit mobile number" required></label>
+      <label class="field"><span>Aadhaar number</span><input name="aadhaar" inputmode="numeric" pattern="[0-9]{12}" maxlength="12" placeholder="12-digit Aadhaar number" required></label>
+      <p class="hint">Used only for identity verification and stored encrypted.</p>
+      <label class="field"><span>Email ID</span><input name="email" type="email" required autocomplete="email"></label>
+      <label class="field"><span>Photo</span><input type="file" name="photo" accept=".jpg,.jpeg,.png" required></label>
+      <label class="field"><span>Resume</span><input type="file" name="resume" accept=".pdf,.doc,.docx,.txt,.md" required></label>
+      <p class="hint">PDF, DOC, DOCX, TXT or MD, up to 8&nbsp;MB total.</p>
+      <button class="btn go wide" type="submit">Submit application</button>
+    </form>
+
+    <div id="applyDone" class="hide" style="text-align:center">
+      <div class="eyebrow" style="color:var(--live)">Application received</div>
+      <h1>Thank you</h1>
+      <p class="sub">We've received your application. If you're shortlisted, we'll email your interview link. Otherwise, we'll let you know by email.</p>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/apply.js"></script>
+</body>
+</html>

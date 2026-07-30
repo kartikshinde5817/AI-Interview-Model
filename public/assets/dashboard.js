@@ -416,4 +416,288 @@ $('#editForm').addEventListener('submit', async (e) => {
   }
 });
 
+/* ---------------- applications tab ---------------- */
+
+const APP_STATUS = { submitted: 'Submitted', invited: 'Invited', rejected: 'Rejected' };
+let APP_CACHE = [];
+let APP_SETTINGS = null;
+
+function selectPane(which) {
+  const apps = which === 'applications';
+  $('#tabCandidates').classList.toggle('on', !apps);
+  $('#tabApplications').classList.toggle('on', apps);
+  $('#tabCandidates').setAttribute('aria-selected', String(!apps));
+  $('#tabApplications').setAttribute('aria-selected', String(apps));
+  $('#paneCandidates').classList.toggle('hide', apps);
+  $('#paneApplications').classList.toggle('hide', !apps);
+  if (apps) loadApplications();
+}
+$('#tabCandidates').addEventListener('click', () => selectPane('candidates'));
+$('#tabApplications').addEventListener('click', () => selectPane('applications'));
+
+async function loadApplications() {
+  const params = new URLSearchParams();
+  const status = $('#appStatusFilter').value;
+  const q = $('#appSearch').value.trim();
+  const minScore = $('#appMinScore').value;
+  const maxScore = $('#appMaxScore').value;
+  if (status) params.set('status', status);
+  if (q) params.set('q', q);
+  if (minScore) params.set('minScore', minScore);
+  if (maxScore) params.set('maxScore', maxScore);
+  const { applications, settings } = await api(`/api/admin/applications?${params}`);
+  APP_CACHE = applications;
+  APP_SETTINGS = settings;
+
+  const count = (s) => applications.filter((a) => a.status === s).length;
+  $('#appStats').innerHTML = [
+    ['Submitted', count('submitted')], ['Invited', count('invited')],
+    ['Rejected', count('rejected')], ['Total', applications.length],
+  ].map(([l, n]) => `<div class="stat"><div class="n">${String(n).padStart(2, '0')}</div><div class="l">${l}</div></div>`).join('');
+
+  if (!applications.length) {
+    $('#appListWrap').innerHTML = '<div class="empty">No applications yet. Share the application link to start receiving candidates.</div>';
+    return;
+  }
+  $('#appListWrap').innerHTML = `<table class="grid"><thead><tr>
+      <th>Applicant</th><th>Mobile</th><th>ATS score</th><th>Status</th><th>Applied</th><th></th>
+    </tr></thead><tbody>${applications.map(appRow).join('')}</tbody></table>`;
+}
+
+function appRow(a) {
+  const scoreColor = a.atsScore >= (APP_SETTINGS?.atsThreshold ?? 60) ? 'var(--live)' : 'var(--record)';
+  return `<tr>
+    <td class="name-cell"><b>${esc(a.name)}</b><span>${esc(a.email)}</span></td>
+    <td class="mono" style="font-size:13px">${esc(a.mobile || '—')}</td>
+    <td class="mono" style="font-size:14px;color:${scoreColor}">${a.atsScore}</td>
+    <td><span class="pill ${a.status}">${APP_STATUS[a.status]}</span></td>
+    <td style="font-size:13px;color:var(--graphite)">${fmtDate(a.createdAt)}</td>
+    <td><div class="row-actions"><button class="btn sm" data-open-app="${a.id}">Open</button></div></td>
+  </tr>`;
+}
+
+$('#appListWrap').addEventListener('click', (e) => {
+  const open = e.target.closest('[data-open-app]');
+  if (open) showAppDetail(open.dataset.openApp);
+});
+$('#appFilterBtn').addEventListener('click', loadApplications);
+$('#appRefreshBtn').addEventListener('click', loadApplications);
+$('#appSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadApplications(); });
+
+let APP_DETAIL_ID = null;
+
+const closeAppDetail = () => { $('#appDetailBg').classList.add('hide'); $('#appDetailSheet').classList.add('hide'); loadApplications(); };
+$('#appDetailBg').addEventListener('click', closeAppDetail);
+document.querySelectorAll('[data-close-app-detail]').forEach((b) => b.addEventListener('click', closeAppDetail));
+
+async function showAppDetail(id) {
+  const cached = APP_CACHE.find((x) => x.id === id);
+  $('#appDetailBg').classList.remove('hide');
+  $('#appDetailSheet').classList.remove('hide');
+  $('#appDetailName').textContent = cached ? cached.name : 'Application';
+  $('#appDetailBody').innerHTML = '<div class="card">Loading record…</div>';
+  APP_DETAIL_ID = id;
+  let a;
+  try {
+    a = await api(`/api/admin/applications/${id}`);
+  } catch (e) {
+    if (APP_DETAIL_ID !== id) return;
+    $('#appDetailBody').innerHTML = `<div class="card"><h3 style="color:var(--record)">Could not load this record</h3><p style="font-size:14px;margin:0">${esc(e.message)}</p></div>`;
+    return;
+  }
+  if (APP_DETAIL_ID !== id) return;
+  $('#appDetailName').textContent = a.name;
+  $('#appDetailBody').innerHTML = appDetailHtml(a);
+}
+
+function appDetailHtml(a) {
+  const matches = (a.atsMatches || []).map((m) => `<li>${esc(m.term)} <span class="mono" style="color:var(--graphite)">(+${m.weight})</span></li>`).join('');
+  return `<div class="card">
+    <h3>Applicant</h3>
+    <dl class="kv">
+      <dt>Status</dt><dd><span class="pill ${a.status}">${APP_STATUS[a.status]}</span></dd>
+      <dt>Email</dt><dd>${esc(a.email)}</dd>
+      <dt>Mobile</dt><dd class="mono">${esc(a.mobile || '—')}</dd>
+      <dt>Aadhaar</dt><dd class="mono" id="aadhaarVal">${esc(a.aadhaarMasked || '—')} ${a.aadhaarMasked ? '<button class="btn ghost sm" id="revealAadhaarBtn" type="button" style="margin-left:8px">Reveal</button>' : ''}</dd>
+      <dt>Applied</dt><dd>${fmtDate(a.createdAt)}</dd>
+      <dt>Resume</dt><dd>${a.hasResume ? `<a href="/api/admin/applications/${a.id}/resume">Download</a>` : '—'}</dd>
+      <dt>Decision email</dt><dd>${a.emailSent == null ? '<span style="color:var(--graphite)">Not processed yet</span>' : (a.emailSent ? `<span style="color:var(--live)">Sent</span> — ${esc(a.emailMessage || '')}` : `<span style="color:var(--record)">Failed</span> — ${esc(a.emailMessage || '')}`)}</dd>
+    </dl>
+    ${a.hasPhoto ? `<a href="/api/admin/applications/${a.id}/photo" target="_blank" style="display:inline-block;margin-top:12px">
+      <img src="/api/admin/applications/${a.id}/photo" alt="Applicant photo" style="max-width:160px;border-radius:4px;border:1px solid var(--line);display:block">
+    </a>` : ''}
+    <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+      <button class="btn ghost sm" id="rescanBtn">Recalculate ATS</button>
+      <button class="btn go sm" id="processBtn">Process (send decision email)</button>
+      <button class="btn ghost sm" id="appEditBtn">Edit</button>
+      <button class="btn danger sm" id="appDelBtn">Delete</button>
+    </div>
+  </div>
+  <div class="card">
+    <h3>ATS score</h3>
+    <div class="score-strip">
+      <div class="score"><div class="n">${a.atsScore}</div><div class="l">Score /100</div></div>
+      <div class="score"><div class="n" style="font-size:16px">${a.atsScore >= (APP_SETTINGS?.atsThreshold ?? 60) ? 'Meets criteria' : 'Below criteria'}</div><div class="l">Verdict</div></div>
+    </div>
+    ${matches ? `<h3 style="margin-top:18px">Matched keywords</h3><ul class="plain">${matches}</ul>` : '<p class="hint" style="margin-top:14px">No configured keywords were found in this resume.</p>'}
+  </div>`;
+}
+
+$('#appDetailBody').addEventListener('click', async (e) => {
+  const id = APP_DETAIL_ID;
+  if (!id) return;
+  if (e.target.id === 'revealAadhaarBtn') {
+    const { aadhaar } = await api(`/api/admin/applications/${id}/reveal-aadhaar`, { method: 'POST' });
+    $('#aadhaarVal').innerHTML = `<span class="mono">${esc(aadhaar)}</span>`;
+  }
+  if (e.target.id === 'rescanBtn') {
+    await api(`/api/admin/applications/${id}/rescan`, { method: 'POST' });
+    showAppDetail(id);
+  }
+  if (e.target.id === 'processBtn') {
+    if (!confirm('Send this applicant the automatic decision email now, based on their current ATS score?')) return;
+    await api(`/api/admin/applications/${id}/process`, { method: 'POST' });
+    showAppDetail(id);
+  }
+  if (e.target.id === 'appEditBtn') {
+    openAppEdit(APP_CACHE.find((x) => x.id === id) || {});
+  }
+  if (e.target.id === 'appDelBtn') {
+    if (!confirm('Delete this application, its photo and resume? This cannot be undone.')) return;
+    await api(`/api/admin/applications/${id}`, { method: 'DELETE' });
+    closeAppDetail();
+  }
+});
+
+/* ---------------- edit application ---------------- */
+
+let APP_EDIT_ID = null;
+function openAppEdit(a) {
+  APP_EDIT_ID = a.id;
+  const f = $('#appEditForm');
+  f.reset();
+  $('#appEditErr').classList.add('hide');
+  f.elements.name.value = a.name || '';
+  f.elements.email.value = a.email || '';
+  f.elements.mobile.value = a.mobile || '';
+  f.elements.status.value = a.status || 'submitted';
+  $('#appEditBg').classList.remove('hide');
+  $('#appEditSheet').classList.remove('hide');
+}
+const closeAppEdit = () => { $('#appEditBg').classList.add('hide'); $('#appEditSheet').classList.add('hide'); };
+$('#appEditBg').addEventListener('click', closeAppEdit);
+document.querySelectorAll('[data-close-app-edit]').forEach((b) => b.addEventListener('click', closeAppEdit));
+
+$('#appEditForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  const err = $('#appEditErr');
+  err.classList.add('hide');
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries(fd.entries());
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    await api(`/api/admin/applications/${APP_EDIT_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    closeAppEdit();
+    await loadApplications();
+    if (!$('#appDetailSheet').classList.contains('hide')) showAppDetail(APP_EDIT_ID);
+  } catch (e2) {
+    err.textContent = e2.message; err.classList.remove('hide');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save changes';
+  }
+});
+
+/* ---------------- settings ---------------- */
+
+function keywordRowHtml(term = '', weight = 5) {
+  return `<div class="kwrow" style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+    <input class="kw-term" value="${esc(term)}" placeholder="keyword" style="flex:2;padding:9px 11px;border:1px solid var(--line);border-radius:4px">
+    <input class="kw-weight" type="number" min="0" value="${weight}" style="width:70px;padding:9px 11px;border:1px solid var(--line);border-radius:4px">
+    <button type="button" class="btn ghost sm kw-remove">Remove</button>
+  </div>`;
+}
+$('#keywordRows').addEventListener('click', (e) => {
+  if (e.target.classList.contains('kw-remove')) e.target.closest('.kwrow').remove();
+});
+$('#addKeywordBtn').addEventListener('click', () => {
+  $('#keywordRows').insertAdjacentHTML('beforeend', keywordRowHtml());
+});
+
+function openSettings(settings) {
+  const f = $('#settingsForm');
+  f.elements.applicationSlug.value = settings.applicationSlug;
+  f.elements.atsThreshold.value = settings.atsThreshold;
+  f.elements.interviewRoleTitle.value = settings.interviewRoleTitle;
+  f.elements.autoSendOnSubmit.checked = !!settings.autoSendOnSubmit;
+  f.elements.rejectionSubject.value = settings.rejectionSubject;
+  f.elements.rejectionBody.value = settings.rejectionBody;
+  $('#keywordRows').innerHTML = (settings.atsKeywords || []).map((k) => keywordRowHtml(k.term, k.weight)).join('') || keywordRowHtml();
+  $('#settingsLink').value = `${location.origin}/apply/${settings.applicationSlug}`;
+  $('#settingsErr').classList.add('hide');
+  $('#settingsBg').classList.remove('hide');
+  $('#settingsSheet').classList.remove('hide');
+}
+const closeSettings = () => { $('#settingsBg').classList.add('hide'); $('#settingsSheet').classList.add('hide'); };
+$('#settingsBg').addEventListener('click', closeSettings);
+document.querySelectorAll('[data-close-settings]').forEach((b) => b.addEventListener('click', closeSettings));
+
+async function openSettingsFresh() {
+  const { settings } = await api('/api/admin/settings');
+  APP_SETTINGS = settings;
+  openSettings(settings);
+}
+$('#atsSettingsBtn').addEventListener('click', openSettingsFresh);
+$('#applyLinkBtn').addEventListener('click', openSettingsFresh);
+
+$('#copySettingsLink').addEventListener('click', (e) => {
+  navigator.clipboard.writeText($('#settingsLink').value);
+  e.target.textContent = 'Copied';
+  setTimeout(() => (e.target.textContent = 'Copy'), 1400);
+});
+
+$('#settingsForm').elements.applicationSlug.addEventListener('input', (e) => {
+  $('#settingsLink').value = `${location.origin}/apply/${e.target.value || ''}`;
+});
+
+$('#settingsForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  const err = $('#settingsErr');
+  err.classList.add('hide');
+  const f = e.target;
+  const atsKeywords = [...document.querySelectorAll('#keywordRows .kwrow')].map((row) => ({
+    term: row.querySelector('.kw-term').value.trim(),
+    weight: Number(row.querySelector('.kw-weight').value) || 0,
+  })).filter((k) => k.term);
+  const body = {
+    applicationSlug: f.elements.applicationSlug.value.trim(),
+    atsKeywords,
+    atsThreshold: Number(f.elements.atsThreshold.value),
+    interviewRoleTitle: f.elements.interviewRoleTitle.value.trim(),
+    autoSendOnSubmit: f.elements.autoSendOnSubmit.checked,
+    rejectionSubject: f.elements.rejectionSubject.value,
+    rejectionBody: f.elements.rejectionBody.value,
+  };
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const { settings } = await api('/api/admin/settings', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    APP_SETTINGS = settings;
+    closeSettings();
+    if (!$('#paneApplications').classList.contains('hide')) loadApplications();
+  } catch (e2) {
+    err.textContent = e2.message; err.classList.remove('hide');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save settings';
+  }
+});
+
 boot();

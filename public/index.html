@@ -48,18 +48,54 @@
       <span class="eyebrow" id="aiState">checking</span>
     </div>
     <div style="display:flex;gap:8px">
+      <button class="btn ghost" id="applyLinkBtn">Application link</button>
       <button class="btn" id="newBtn">Add candidate</button>
       <button class="btn ghost" id="outBtn">Sign out</button>
     </div>
   </header>
 
   <main class="wrap">
-    <div class="stats" id="stats"></div>
-    <div class="section-head">
-      <h2>Candidates</h2>
-      <button class="btn ghost sm" id="refreshBtn">Refresh</button>
+    <div class="tabs" style="max-width:360px" role="tablist">
+      <button class="tab on" id="tabCandidates" role="tab" aria-selected="true">Interview candidates</button>
+      <button class="tab" id="tabApplications" role="tab" aria-selected="false">Applications</button>
     </div>
-    <div id="listWrap"></div>
+
+    <div id="paneCandidates">
+      <div class="stats" id="stats"></div>
+      <div class="section-head">
+        <h2>Candidates</h2>
+        <button class="btn ghost sm" id="refreshBtn">Refresh</button>
+      </div>
+      <div id="listWrap"></div>
+    </div>
+
+    <div id="paneApplications" class="hide">
+      <div class="stats" id="appStats"></div>
+      <div class="section-head">
+        <h2>Applications</h2>
+        <div style="display:flex;gap:8px">
+          <button class="btn ghost sm" id="atsSettingsBtn">ATS &amp; email settings</button>
+          <button class="btn ghost sm" id="appRefreshBtn">Refresh</button>
+        </div>
+      </div>
+      <div class="card" style="padding:14px 18px">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <label class="field" style="flex:2;min-width:180px;margin:0"><span>Search</span><input id="appSearch" placeholder="Name, email or mobile"></label>
+          <label class="field" style="flex:1;min-width:140px;margin:0"><span>Status</span>
+            <select id="appStatusFilter">
+              <option value="">All</option>
+              <option value="submitted">Submitted</option>
+              <option value="invited">Invited</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </label>
+          <label class="field" style="width:90px;margin:0"><span>Min score</span><input id="appMinScore" type="number" min="0" max="100"></label>
+          <label class="field" style="width:90px;margin:0"><span>Max score</span><input id="appMaxScore" type="number" min="0" max="100"></label>
+          <button class="btn sm" id="appFilterBtn">Filter</button>
+        </div>
+      </div>
+      <div id="appListWrap"></div>
+    </div>
   </main>
 </div>
 
@@ -152,6 +188,84 @@
       </div>
       <div id="editErr" class="err hide"></div>
       <button class="btn go wide" type="submit">Save changes</button>
+    </form>
+  </div>
+</aside>
+
+<!-- ============ application record ============ -->
+<div id="appDetailBg" class="sheet-bg hide"></div>
+<aside id="appDetailSheet" class="sheet hide" aria-label="Application record">
+  <div class="sheet-head">
+    <h2 id="appDetailName">Application</h2>
+    <button class="btn ghost sm" data-close-app-detail>Close</button>
+  </div>
+  <div class="sheet-body" id="appDetailBody"></div>
+</aside>
+
+<!-- ============ edit application ============ -->
+<div id="appEditBg" class="sheet-bg hide"></div>
+<aside id="appEditSheet" class="sheet hide" aria-label="Edit application">
+  <div class="sheet-head">
+    <h2>Edit application</h2>
+    <button class="btn ghost sm" data-close-app-edit>Close</button>
+  </div>
+  <div class="sheet-body">
+    <form id="appEditForm">
+      <div class="card">
+        <label class="field"><span>Full name</span><input name="name" required></label>
+        <label class="field"><span>Email</span><input name="email" type="email" required></label>
+        <label class="field"><span>Mobile number</span><input name="mobile" maxlength="10"></label>
+        <label class="field"><span>Status</span>
+          <select name="status">
+            <option value="submitted">Submitted</option>
+            <option value="invited">Invited</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </label>
+      </div>
+      <div id="appEditErr" class="err hide"></div>
+      <button class="btn go wide" type="submit">Save changes</button>
+    </form>
+  </div>
+</aside>
+
+<!-- ============ ATS & email settings ============ -->
+<div id="settingsBg" class="sheet-bg hide"></div>
+<aside id="settingsSheet" class="sheet hide" aria-label="Application settings">
+  <div class="sheet-head">
+    <h2>ATS &amp; email settings</h2>
+    <button class="btn ghost sm" data-close-settings>Close</button>
+  </div>
+  <div class="sheet-body">
+    <form id="settingsForm">
+      <div class="card">
+        <h3>Application link</h3>
+        <label class="field"><span>Link slug</span><input name="applicationSlug" pattern="[a-z0-9\-]+" required></label>
+        <p class="hint">Editing the slug immediately invalidates the old application link.</p>
+        <div class="linkbox">
+          <input id="settingsLink" readonly>
+          <button class="btn sm" type="button" id="copySettingsLink">Copy</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>ATS criteria</h3>
+        <div id="keywordRows"></div>
+        <button class="btn ghost sm" type="button" id="addKeywordBtn" style="margin-top:6px">Add keyword</button>
+        <label class="field" style="margin-top:16px"><span>Pass threshold (0-100)</span><input name="atsThreshold" type="number" min="0" max="100" required></label>
+        <label class="field"><span>Position title used for interview invites</span><input name="interviewRoleTitle" required></label>
+        <label class="field" style="display:flex;align-items:center;gap:8px;flex-direction:row">
+          <input name="autoSendOnSubmit" type="checkbox" style="width:auto">
+          <span style="margin:0;text-transform:none;font-family:inherit;font-size:14px;letter-spacing:0">Automatically email the decision the moment someone applies (otherwise, click Process in the application record)</span>
+        </label>
+      </div>
+      <div class="card">
+        <h3>Rejection email</h3>
+        <label class="field"><span>Subject</span><input name="rejectionSubject" required></label>
+        <label class="field"><span>Body</span><textarea name="rejectionBody" style="min-height:180px" required></textarea></label>
+        <p class="hint">Use {{name}} and {{role}} as placeholders.</p>
+      </div>
+      <div id="settingsErr" class="err hide"></div>
+      <button class="btn go wide" type="submit">Save settings</button>
     </form>
   </div>
 </aside>

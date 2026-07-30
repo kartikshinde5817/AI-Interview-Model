@@ -2,23 +2,29 @@
 """
 AI Interview Console
 ====================
-One file, one command, no pip install:
+One file, one command:
 
+    pip install -r requirements.txt
     python main.py
 
-It serves the dashboard, the candidate exam runtime and the whole API from a
-single process on http://localhost:8000
+It serves the dashboard, the public job application form, the candidate exam
+runtime and the whole API from a single process on http://localhost:8000
 
   Admin panel      admin / admin123
   Candidate panel  user  / user123
 
 Set ANTHROPIC_API_KEY to have questions written and answers scored by Claude.
 Without it the platform runs on a built-in question bank with the same mix.
+
+The admin-editable public application form (/apply/<slug>) collects candidate
+details and a resume, scores the resume against admin-configured ATS keywords,
+and automatically emails an interview invite or a rejection based on the score.
 """
 
 import base64
 import hashlib
 import hmac
+import io
 import json
 import mimetypes
 import os
@@ -37,6 +43,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import parseaddr
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from cryptography.fernet import Fernet, InvalidToken
 
 # Some hosts (e.g. Railway) resolve outbound hostnames to IPv6 addresses but
 # have no IPv6 egress route, which fails raw-socket protocols like SMTP with
@@ -59,7 +67,12 @@ UPLOADS = os.path.join(DATA, "uploads")
 RECORDINGS = os.path.join(DATA, "recordings")
 VERIFICATIONS = os.path.join(DATA, "verifications")
 EVIDENCE = os.path.join(DATA, "evidence")
+PHOTOS = os.path.join(DATA, "photos")
 DB_FILE = os.path.join(DATA, "db.json")
+
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # applies to the public, unauthenticated /api/apply endpoint
+RESUME_EXTS = (".pdf", ".doc", ".docx", ".txt", ".md")
+PHOTO_EXTS = (".jpg", ".jpeg", ".png")
 
 
 def env(key, default):
@@ -107,7 +120,7 @@ CFG = {
     "brevo_from": env("BREVO_FROM", ""),
 }
 
-for d in (DATA, UPLOADS, RECORDINGS, VERIFICATIONS, EVIDENCE):
+for d in (DATA, UPLOADS, RECORDINGS, VERIFICATIONS, EVIDENCE, PHOTOS):
     os.makedirs(d, exist_ok=True)
 
 
@@ -124,7 +137,37 @@ def new_id(n=6):
 # --------------------------------------------------------------------------- #
 
 _lock = threading.RLock()
-_state = {"candidates": []}
+_state = {"candidates": [], "applications": [], "settings": {}}
+
+SETTINGS_DEFAULTS = {
+    "applicationSlug": None,   # filled in on first boot below
+    "atsKeywords": [
+        {"term": "python", "weight": 5}, {"term": "javascript", "weight": 5},
+        {"term": "sql", "weight": 4}, {"term": "communication", "weight": 3},
+    ],
+    "atsThreshold": 60,
+    "interviewRoleTitle": "Open position",
+    "autoSendOnSubmit": False,
+    "rejectionSubject": "Your application update - {{role}}",
+    "rejectionBody": (
+        "Hi {{name}},\n\n"
+        "Thank you for taking the time to apply for the {{role}} position and for sharing your "
+        "resume with us. After careful review, we will not be moving forward with your "
+        "application at this time.\n\n"
+        "This decision reflects the specific needs of this role rather than your overall "
+        "potential, and we encourage you to apply again in the future.\n\n"
+        "We wish you the very best in your job search.\n\n"
+        "Warm regards,\nThe Hiring Team"
+    ),
+}
+
+
+def migrate_settings(s):
+    for key, default in SETTINGS_DEFAULTS.items():
+        s.setdefault(key, [] if isinstance(default, list) else default)
+    if not s.get("applicationSlug"):
+        s["applicationSlug"] = new_id(4)
+    return s
 
 CANDIDATE_DEFAULTS = {
     "slot1DeadlineAt": None, "verificationPhoto": None, "evidenceShots": [],
@@ -156,15 +199,33 @@ def migrate_candidate(c):
     return c
 
 
+APPLICATION_DEFAULTS = {
+    "candidateId": None, "emailSent": None, "emailMessage": None, "decisionAt": None,
+    "atsMatches": [], "atsCriteriaSnapshot": None,
+}
+
+
+def migrate_application(a):
+    for key, default in APPLICATION_DEFAULTS.items():
+        a.setdefault(key, [] if isinstance(default, list) else default)
+    return a
+
+
 if os.path.exists(DB_FILE):
     try:
         with open(DB_FILE, encoding="utf-8") as f:
             _state = json.load(f)
         _state.setdefault("candidates", [])
+        _state.setdefault("applications", [])
+        _state.setdefault("settings", {})
         _state["candidates"] = [migrate_candidate(c) for c in _state["candidates"]]
+        _state["applications"] = [migrate_application(a) for a in _state["applications"]]
+        _state["settings"] = migrate_settings(_state["settings"])
     except Exception as exc:  # noqa: BLE001
         print(f"  ! db.json unreadable ({exc}), starting fresh")
-        _state = {"candidates": []}
+        _state = {"candidates": [], "applications": [], "settings": migrate_settings({})}
+else:
+    _state["settings"] = migrate_settings(_state["settings"])
 
 
 def save():
@@ -224,6 +285,71 @@ def create_candidate(**kw):
     return c
 
 
+def get_settings():
+    return _state["settings"]
+
+
+def update_settings(**kw):
+    with _lock:
+        _state["settings"].update(kw)
+    save()
+    return _state["settings"]
+
+
+def all_applications():
+    return _state["applications"]
+
+
+def find_application(aid):
+    return next((a for a in _state["applications"] if a["id"] == aid), None)
+
+
+def create_application(**kw):
+    a = {
+        "id": new_id(6),
+        "createdAt": now_iso(),
+        "name": kw.get("name", ""),
+        "mobile": kw.get("mobile", ""),
+        "email": kw.get("email", ""),
+        "aadhaarEnc": kw.get("aadhaarEnc"),
+        "aadhaarLast4": kw.get("aadhaarLast4", ""),
+        "photoFile": kw.get("photoFile"),
+        "resumeFile": kw.get("resumeFile"),
+        "resumeText": kw.get("resumeText", ""),
+        "atsScore": kw.get("atsScore", 0),
+        "atsMatches": kw.get("atsMatches", []),
+        "atsCriteriaSnapshot": kw.get("atsCriteriaSnapshot"),
+        "status": "submitted",   # submitted | invited | rejected
+        "decisionAt": None,
+        "emailSent": None,
+        "emailMessage": None,
+        "candidateId": None,
+    }
+    with _lock:
+        _state["applications"].insert(0, a)
+    save()
+    return a
+
+
+def delete_application(aid):
+    with _lock:
+        a = find_application(aid)
+        if not a:
+            return False
+        _state["applications"].remove(a)
+    for path in (
+        os.path.join(UPLOADS, a["resumeFile"]) if a.get("resumeFile") else None,
+        os.path.join(PHOTOS, a["photoFile"]) if a.get("photoFile") else None,
+    ):
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    save()
+    return True
+
+
 def schedule_error(c):
     """None if the interview link is currently within its scheduled window, else an error message."""
     now = datetime.now()
@@ -251,6 +377,59 @@ def fmt_schedule(iso_str):
         return datetime.fromisoformat(iso_str).strftime("%d %b %Y, %I:%M %p")
     except ValueError:
         return iso_str
+
+
+# --------------------------------------------------------------------------- #
+# Resume parsing, ATS scoring, Aadhaar encryption                              #
+# --------------------------------------------------------------------------- #
+
+def extract_resume_text(filepath, ext):
+    """Best-effort text extraction; never raises - a failed parse just yields no text."""
+    ext = ext.lower()
+    try:
+        if ext in (".txt", ".md"):
+            with open(filepath, "rb") as f:
+                return f.read().decode("utf-8", "replace")
+        if ext == ".pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(filepath)
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
+        if ext == ".docx":
+            from docx import Document
+            doc = Document(filepath)
+            return "\n".join(p.text for p in doc.paragraphs)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! resume text extraction failed ({filepath}): {exc}")
+    return ""
+
+
+def score_resume(text, criteria):
+    """Rule-based ATS score: percentage of configured keyword weight found in the resume text."""
+    text_l = (text or "").lower()
+    keywords = criteria.get("atsKeywords") or []
+    matches = [kw for kw in keywords if kw.get("term") and kw["term"].lower() in text_l]
+    total_weight = sum(max(0, kw.get("weight", 0)) for kw in keywords)
+    matched_weight = sum(max(0, kw.get("weight", 0)) for kw in matches)
+    score = round(matched_weight / total_weight * 100) if total_weight else 0
+    return score, matches
+
+
+def _fernet():
+    key = base64.urlsafe_b64encode(hashlib.sha256(CFG["session_secret"].encode()).digest())
+    return Fernet(key)
+
+
+def encrypt_aadhaar(raw):
+    return _fernet().encrypt(raw.encode()).decode()
+
+
+def decrypt_aadhaar(token):
+    if not token:
+        return ""
+    try:
+        return _fernet().decrypt(token.encode()).decode()
+    except InvalidToken:
+        return ""
 
 
 def build_invitation_content(c, base_url):
@@ -303,12 +482,12 @@ Good luck!
     return subject, text_body, html_body
 
 
-def send_via_resend(c, subject, text_body, html_body):
+def send_via_resend(to_email, to_name, subject, text_body, html_body):
     """HTTP-based send. Works on hosts (e.g. Railway) that block outbound SMTP ports,
     since it's just an HTTPS POST like the Claude API calls."""
     body = json.dumps({
         "from": CFG["resend_from"],
-        "to": [c["email"]],
+        "to": [to_email],
         "subject": subject,
         "text": text_body,
         "html": html_body,
@@ -327,7 +506,7 @@ def send_via_resend(c, subject, text_body, html_body):
     try:
         with urllib.request.urlopen(req, timeout=15) as res:
             data = json.loads(res.read().decode())
-        return True, f"sent to {c['email']} via Resend (id {data.get('id', '?')})"
+        return True, f"sent to {to_email} via Resend (id {data.get('id', '?')})"
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")
         return False, f"Resend rejected the request ({exc.code}): {detail[:300]}"
@@ -335,7 +514,7 @@ def send_via_resend(c, subject, text_body, html_body):
         return False, str(exc)
 
 
-def send_via_brevo(c, subject, text_body, html_body):
+def send_via_brevo(to_email, to_name, subject, text_body, html_body):
     """HTTP-based send, like send_via_resend. Brevo will send from a single
     sender address verified by clicking a link in that mailbox, so it needs no
     DNS records - the option to reach for when you cannot edit the domain's zone."""
@@ -344,7 +523,7 @@ def send_via_brevo(c, subject, text_body, html_body):
         return False, "BREVO_FROM is missing or malformed (expected: Name <you@example.com>)"
     body = json.dumps({
         "sender": {"name": name or addr, "email": addr},
-        "to": [{"email": c["email"], "name": c["name"] or c["email"]}],
+        "to": [{"email": to_email, "name": to_name or to_email}],
         "subject": subject,
         "textContent": text_body,
         "htmlContent": html_body,
@@ -361,7 +540,7 @@ def send_via_brevo(c, subject, text_body, html_body):
     try:
         with urllib.request.urlopen(req, timeout=15) as res:
             data = json.loads(res.read().decode())
-        return True, f"sent to {c['email']} via Brevo (id {data.get('messageId', '?')})"
+        return True, f"sent to {to_email} via Brevo (id {data.get('messageId', '?')})"
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")
         return False, f"Brevo rejected the request ({exc.code}): {detail[:300]}"
@@ -369,11 +548,11 @@ def send_via_brevo(c, subject, text_body, html_body):
         return False, str(exc)
 
 
-def send_via_smtp(c, subject, text_body, html_body):
+def send_via_smtp(to_email, to_name, subject, text_body, html_body):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = CFG["smtp_from"] or CFG["smtp_user"]
-    msg["To"] = c["email"]
+    msg["To"] = to_email
     msg.attach(MIMEText(text_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))
     try:
@@ -382,15 +561,30 @@ def send_via_smtp(c, subject, text_body, html_body):
         if CFG["smtp_port"] == 465:
             with smtplib.SMTP_SSL(CFG["smtp_host"], CFG["smtp_port"], timeout=15) as s:
                 s.login(CFG["smtp_user"], CFG["smtp_pass"])
-                s.sendmail(msg["From"], [c["email"]], msg.as_string())
+                s.sendmail(msg["From"], [to_email], msg.as_string())
         else:
             with smtplib.SMTP(CFG["smtp_host"], CFG["smtp_port"], timeout=15) as s:
                 s.starttls()
                 s.login(CFG["smtp_user"], CFG["smtp_pass"])
-                s.sendmail(msg["From"], [c["email"]], msg.as_string())
-        return True, f"sent to {c['email']}"
+                s.sendmail(msg["From"], [to_email], msg.as_string())
+        return True, f"sent to {to_email}"
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
+
+
+def send_email(to_email, to_name, subject, text_body, html_body):
+    """Generic dispatcher shared by interview invitations and application decision
+    emails. Picks whichever provider is configured, Brevo -> Resend -> SMTP."""
+    if not to_email:
+        return False, "no email on file"
+    if CFG["brevo_api_key"]:
+        return send_via_brevo(to_email, to_name, subject, text_body, html_body)
+    if CFG["resend_api_key"]:
+        return send_via_resend(to_email, to_name, subject, text_body, html_body)
+    if CFG["smtp_host"] and CFG["smtp_user"] and CFG["smtp_pass"]:
+        return send_via_smtp(to_email, to_name, subject, text_body, html_body)
+    return False, ("No email provider configured "
+                   "(set BREVO_API_KEY, or RESEND_API_KEY, or SMTP_HOST / SMTP_USER / SMTP_PASS)")
 
 
 def send_invitation_email(c, base_url):
@@ -399,14 +593,45 @@ def send_invitation_email(c, base_url):
     if not c.get("email"):
         return False, "no email on file"
     subject, text_body, html_body = build_invitation_content(c, base_url)
-    if CFG["brevo_api_key"]:
-        return send_via_brevo(c, subject, text_body, html_body)
-    if CFG["resend_api_key"]:
-        return send_via_resend(c, subject, text_body, html_body)
-    if CFG["smtp_host"] and CFG["smtp_user"] and CFG["smtp_pass"]:
-        return send_via_smtp(c, subject, text_body, html_body)
-    return False, ("No email provider configured "
-                   "(set BREVO_API_KEY, or RESEND_API_KEY, or SMTP_HOST / SMTP_USER / SMTP_PASS)")
+    return send_email(c["email"], c.get("name"), subject, text_body, html_body)
+
+
+def build_rejection_content(a, settings):
+    role = settings.get("interviewRoleTitle") or "this position"
+    subject = settings["rejectionSubject"].replace("{{name}}", a["name"]).replace("{{role}}", role)
+    text_body = settings["rejectionBody"].replace("{{name}}", a["name"]).replace("{{role}}", role)
+    html_body = f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#12161c;max-width:520px;white-space:pre-wrap">{esc_html(text_body)}</div>'
+    return subject, text_body, html_body
+
+
+def send_rejection_email(a):
+    if not a.get("email"):
+        return False, "no email on file"
+    subject, text_body, html_body = build_rejection_content(a, get_settings())
+    return send_email(a["email"], a.get("name"), subject, text_body, html_body)
+
+
+def process_application(a, base_url):
+    """Automatic decision: score vs. threshold decides which email goes out.
+    Runs either from the admin's 'Process' click or automatically at submission
+    time when settings.autoSendOnSubmit is on."""
+    settings = get_settings()
+    if a["atsScore"] >= settings["atsThreshold"]:
+        c = create_candidate(
+            name=a["name"], email=a["email"], role=settings["interviewRoleTitle"],
+            resumeText=a["resumeText"], resumeFile=a["resumeFile"],
+        )
+        ok, msg = send_invitation_email(c, base_url)
+        a["candidateId"] = c["id"]
+        a["status"] = "invited"
+    else:
+        ok, msg = send_rejection_email(a)
+        a["status"] = "rejected"
+    a["emailSent"] = ok
+    a["emailMessage"] = msg
+    a["decisionAt"] = now_iso()
+    save()
+    return a
 
 
 def delete_candidate(cid):
@@ -989,6 +1214,20 @@ def public_view(c):
     }
 
 
+def application_view(a, full=False):
+    """Aadhaar is always masked here - only /reveal-aadhaar returns the plaintext."""
+    out = {
+        "id": a["id"], "createdAt": a["createdAt"], "name": a["name"], "mobile": a["mobile"],
+        "email": a["email"], "aadhaarMasked": f"XXXX XXXX {a['aadhaarLast4']}" if a["aadhaarLast4"] else "",
+        "hasPhoto": bool(a["photoFile"]), "hasResume": bool(a["resumeFile"]),
+        "atsScore": a["atsScore"], "status": a["status"], "candidateId": a["candidateId"],
+        "emailSent": a["emailSent"], "emailMessage": a["emailMessage"], "decisionAt": a["decisionAt"],
+    }
+    if full:
+        out.update({"atsMatches": a["atsMatches"], "resumeText": a["resumeText"]})
+    return out
+
+
 def slot1_len(c):
     return sum(1 for q in c["questions"] if q["slot"] == 1)
 
@@ -1076,8 +1315,14 @@ class Handler(BaseHTTPRequestHandler):
     def error_json(self, status, message):
         self.json({"error": message}, status)
 
+    def content_length(self):
+        try:
+            return int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return 0
+
     def body_bytes(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        length = self.content_length()
         return self.rfile.read(length) if length else b""
 
     def body_json(self):
@@ -1343,12 +1588,230 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error_json(404, "No such evidence photo.")
             return self.send_file(os.path.join(EVIDENCE, m.group(2)), ctype="image/jpeg")
 
+        # --- admin: settings ---
+        if path == "/api/admin/settings" and method == "GET":
+            if not self.require_admin():
+                return
+            return self.json({"settings": get_settings()})
+
+        if path == "/api/admin/settings" and method == "PATCH":
+            if not self.require_admin():
+                return
+            b = self.body_json()
+            s = get_settings()
+            slug = (b.get("applicationSlug") or "").strip()
+            slug = re.sub(r"[^a-z0-9\-]", "", slug.lower())[:40] or s["applicationSlug"]
+            keywords = b.get("atsKeywords")
+            if not isinstance(keywords, list):
+                keywords = s["atsKeywords"]
+            else:
+                clean = []
+                for kw in keywords:
+                    term = str((kw or {}).get("term") or "").strip()
+                    if not term:
+                        continue
+                    try:
+                        weight = max(0, int((kw or {}).get("weight") or 0))
+                    except (TypeError, ValueError):
+                        weight = 0
+                    clean.append({"term": term, "weight": weight})
+                keywords = clean
+            try:
+                threshold = max(0, min(100, int(b.get("atsThreshold", s["atsThreshold"]))))
+            except (TypeError, ValueError):
+                threshold = s["atsThreshold"]
+            update_settings(
+                applicationSlug=slug, atsKeywords=keywords, atsThreshold=threshold,
+                interviewRoleTitle=(b.get("interviewRoleTitle") or s["interviewRoleTitle"]).strip(),
+                autoSendOnSubmit=bool(b.get("autoSendOnSubmit")),
+                rejectionSubject=(b.get("rejectionSubject") or s["rejectionSubject"]),
+                rejectionBody=(b.get("rejectionBody") or s["rejectionBody"]),
+            )
+            return self.json({"ok": True, "settings": get_settings()})
+
+        # --- admin: applications ---
+        if path == "/api/admin/applications" and method == "GET":
+            if not self.require_admin():
+                return
+            q = self.query()
+            apps = all_applications()
+            status = (q.get("status") or [""])[0]
+            search = (q.get("q") or [""])[0].strip().lower()
+            min_score = (q.get("minScore") or [""])[0]
+            max_score = (q.get("maxScore") or [""])[0]
+            if status:
+                apps = [a for a in apps if a["status"] == status]
+            if search:
+                apps = [a for a in apps if search in a["name"].lower() or search in a["email"].lower() or search in a["mobile"].lower()]
+            if min_score:
+                try:
+                    apps = [a for a in apps if a["atsScore"] >= int(min_score)]
+                except ValueError:
+                    pass
+            if max_score:
+                try:
+                    apps = [a for a in apps if a["atsScore"] <= int(max_score)]
+                except ValueError:
+                    pass
+            return self.json({
+                "applications": [application_view(a) for a in apps],
+                "settings": get_settings(),
+            })
+
+        m = re.fullmatch(r"/api/admin/applications/([0-9a-f]+)", path)
+        if m and method == "GET":
+            if not self.require_admin():
+                return
+            a = find_application(m.group(1))
+            if not a:
+                return self.error_json(404, "Application not found.")
+            return self.json(application_view(a, full=True))
+
+        if m and method == "PATCH":
+            if not self.require_admin():
+                return
+            a = find_application(m.group(1))
+            if not a:
+                return self.error_json(404, "Application not found.")
+            b = self.body_json()
+            name = (b.get("name") or "").strip()
+            email = (b.get("email") or "").strip()
+            mobile = (b.get("mobile") or "").strip()
+            if not name:
+                return self.error_json(400, "Name is required.")
+            if not email or "@" not in email:
+                return self.error_json(400, "A valid email address is required.")
+            status = b.get("status") or a["status"]
+            if status not in ("submitted", "invited", "rejected"):
+                return self.error_json(400, "Not a valid status.")
+            a.update({"name": name, "email": email, "mobile": mobile, "status": status})
+            save()
+            return self.json({"ok": True, "application": application_view(a)})
+
+        if m and method == "DELETE":
+            if not self.require_admin():
+                return
+            return self.json({"ok": delete_application(m.group(1))})
+
+        m = re.fullmatch(r"/api/admin/applications/([0-9a-f]+)/reveal-aadhaar", path)
+        if m and method == "POST":
+            if not self.require_admin():
+                return
+            a = find_application(m.group(1))
+            if not a:
+                return self.error_json(404, "Application not found.")
+            return self.json({"aadhaar": decrypt_aadhaar(a.get("aadhaarEnc"))})
+
+        m = re.fullmatch(r"/api/admin/applications/([0-9a-f]+)/rescan", path)
+        if m and method == "POST":
+            if not self.require_admin():
+                return
+            a = find_application(m.group(1))
+            if not a:
+                return self.error_json(404, "Application not found.")
+            settings = get_settings()
+            score, matches = score_resume(a["resumeText"], settings)
+            a["atsScore"], a["atsMatches"], a["atsCriteriaSnapshot"] = score, matches, settings["atsKeywords"]
+            save()
+            return self.json({"ok": True, "application": application_view(a, full=True)})
+
+        m = re.fullmatch(r"/api/admin/applications/([0-9a-f]+)/process", path)
+        if m and method == "POST":
+            if not self.require_admin():
+                return
+            a = find_application(m.group(1))
+            if not a:
+                return self.error_json(404, "Application not found.")
+            host = self.headers.get("Host") or f"localhost:{CFG['port']}"
+            process_application(a, f"http://{host}")
+            return self.json({"ok": True, "application": application_view(a, full=True)})
+
+        m = re.fullmatch(r"/api/admin/applications/([0-9a-f]+)/resume", path)
+        if m and method == "GET":
+            if not self.require_admin():
+                return
+            a = find_application(m.group(1))
+            if not a or not a["resumeFile"]:
+                return self.error_json(404, "No resume on file.")
+            return self.send_file(os.path.join(UPLOADS, a["resumeFile"]), download=True)
+
+        m = re.fullmatch(r"/api/admin/applications/([0-9a-f]+)/photo", path)
+        if m and method == "GET":
+            if not self.require_admin():
+                return
+            a = find_application(m.group(1))
+            if not a or not a["photoFile"]:
+                return self.error_json(404, "No photo on file.")
+            return self.send_file(os.path.join(PHOTOS, a["photoFile"]), ctype="image/jpeg")
+
+        # --- public application form ---
+        m = re.fullmatch(r"/api/apply/([a-z0-9\-]+)", path)
+        if m and method == "POST":
+            return self.submit_application(m.group(1))
+
         # --- interview ---
         m = re.fullmatch(r"/api/interview/([0-9a-f]+)/(\w+)", path)
         if m:
             return self.interview_api(method, m.group(1), m.group(2))
 
         return self.error_json(404, "No such endpoint.")
+
+    def submit_application(self, slug):
+        settings = get_settings()
+        if slug != settings["applicationSlug"]:
+            return self.error_json(404, "This application link is no longer active.")
+        if self.content_length() > MAX_UPLOAD_BYTES:
+            return self.error_json(413, "That upload is too large (max 8 MB total).")
+        fields, files = parse_multipart(self.body_bytes(), self.headers.get("Content-Type", ""))
+
+        name = (fields.get("name") or "").strip()
+        mobile = re.sub(r"\D", "", fields.get("mobile") or "")
+        aadhaar = re.sub(r"\D", "", fields.get("aadhaar") or "")
+        email = (fields.get("email") or "").strip()
+
+        if not name:
+            return self.error_json(400, "Full name is required.")
+        if not re.fullmatch(r"\d{10}", mobile):
+            return self.error_json(400, "Enter a valid 10-digit mobile number.")
+        if not re.fullmatch(r"\d{12}", aadhaar):
+            return self.error_json(400, "Enter a valid 12-digit Aadhaar number.")
+        if not email or "@" not in email:
+            return self.error_json(400, "Enter a valid email address.")
+        if "resume" not in files:
+            return self.error_json(400, "A resume file is required.")
+
+        resume_original, resume_blob = files["resume"]
+        resume_ext = os.path.splitext(resume_original)[1].lower()
+        if resume_ext not in RESUME_EXTS:
+            return self.error_json(400, "Resume must be a PDF, DOC, DOCX, TXT or MD file.")
+        resume_stored = f"{int(time.time())}-{new_id(3)}{resume_ext}"
+        resume_path = os.path.join(UPLOADS, resume_stored)
+        with open(resume_path, "wb") as f:
+            f.write(resume_blob)
+
+        photo_stored = None
+        if "photo" in files:
+            photo_original, photo_blob = files["photo"]
+            photo_ext = os.path.splitext(photo_original)[1].lower()
+            if photo_ext not in PHOTO_EXTS:
+                return self.error_json(400, "Photo must be a JPG or PNG file.")
+            photo_stored = f"{int(time.time())}-{new_id(3)}{photo_ext}"
+            with open(os.path.join(PHOTOS, photo_stored), "wb") as f:
+                f.write(photo_blob)
+
+        resume_text = extract_resume_text(resume_path, resume_ext)
+        score, matches = score_resume(resume_text, settings)
+
+        a = create_application(
+            name=name, mobile=mobile, email=email,
+            aadhaarEnc=encrypt_aadhaar(aadhaar), aadhaarLast4=aadhaar[-4:],
+            photoFile=photo_stored, resumeFile=resume_stored, resumeText=resume_text,
+            atsScore=score, atsMatches=matches, atsCriteriaSnapshot=settings["atsKeywords"],
+        )
+        if settings["autoSendOnSubmit"]:
+            host = self.headers.get("Host") or f"localhost:{CFG['port']}"
+            process_application(a, f"http://{host}")
+        return self.json({"ok": True, "referenceId": a["id"]})
 
     def interview_api(self, method, token, action):
         c = self.require_candidate(token)
@@ -1559,6 +2022,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_page("index.html")
         if re.fullmatch(r"/i/[0-9a-f]+", path):
             return self.send_page("interview.html")
+        m = re.fullmatch(r"/apply/([a-z0-9\-]+)", path)
+        if m:
+            if m.group(1) != get_settings()["applicationSlug"]:
+                self._send(404, "This application link is no longer active.", "text/plain")
+                return
+            return self.send_page("apply.html")
         candidate = os.path.normpath(os.path.join(PUBLIC, path.lstrip("/")))
         if candidate.startswith(PUBLIC) and os.path.isfile(candidate):
             return self.send_file(candidate)

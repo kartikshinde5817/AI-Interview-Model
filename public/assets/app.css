@@ -83,6 +83,8 @@ a { color: var(--live); }
 .pill.in_progress { background: var(--live-soft); border-color: #b9d9d0; color: #0b5d4b; }
 .pill.completed { background: #e8eef6; border-color: #c3d3e6; color: #244a72; }
 .pill.terminated { background: var(--record-soft); border-color: #e6c4bf; color: var(--record); }
+.pill.submitted { background: #eef0ea; }
+.pill.rejected { background: var(--record-soft); border-color: #e6c4bf; color: var(--record); }
 
 /* =================================================================== */
 /* LOGIN                                                               */
