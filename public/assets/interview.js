@@ -31,9 +31,11 @@ const S = {
   qStarted: 0, recBytes: 0, listening: false, recog: null, recogGen: 0, transcript: '',
   verifyStream: null, verifyShot: null, faceTimer: null, voiceTimer: null, deviceTimer: null,
   needsAadhaar: false, aadhaarOk: false,
-  loudFrames: 0, micTestPassed: false, micGateTimer: null, micTestSR: true,
+  micTestPassed: false,
   micTarget: '', micHeard: '', micRestarts: 0, micSentence: '',
   micRecorder: null, micChunks: [], micUploading: false,
+  micPhase: 'idle', micTimer: null, micMaxTimer: null, micWaveRaf: null,
+  micAudioCtx: null, micLoud: false,
   monitorTimer: null, monitorBusy: false,
   strikes: { device: 0, voice: 0 }, lastStrikeAt: { device: 0, voice: 0 },
   gameSeq: [], gamePick: [], gamePlaying: false, pendingNext: null, isLast: false,
@@ -177,10 +179,6 @@ function meterAudio(stream) {
       for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
       const el = $('#micLevel');
       if (el) el.style.width = `${Math.min(100, (peak / 60) * 100)}%`;
-      // Counting frames that are clearly above room noise gives the mic test a
-      // way to prove the candidate actually spoke, even in browsers with no
-      // speech recognition at all.
-      if (peak > 12) S.loudFrames++;
       requestAnimationFrame(loop);
     };
     loop();
@@ -340,16 +338,13 @@ $('#retakeBtn').addEventListener('click', () => {
   $('#retakeBtn').classList.add('hide');
   $('#micTestPanel').classList.add('hide');
   $('#readyPanel').classList.add('hide');
-  // A new photo means the microphone check has to be earned again.
-  S.micTestPassed = false;
-  clearInterval(S.micGateTimer);
-  $('#micTestContinue').disabled = true;
+  // A new photo means the microphone check starts over from an idle recorder.
+  micStopRecognition();
+  micStopMeters();
+  clearTimeout(S.micMaxTimer);
+  micResetTake();
 });
 
-// Minimum number of above-noise audio frames that counts as sound reaching the
-// mic at all. This only drives the "we cannot hear you" hint - it never unlocks
-// Continue on its own, because sound is not the same as reading the sentence.
-const MIC_LOUD_FRAMES_REQUIRED = 40;
 // Share of the sentence's words that must come back from recognition. Below 1.0
 // so an odd mis-heard word does not trap someone who genuinely read it out.
 const MIC_MATCH_REQUIRED = 0.7;
@@ -375,72 +370,292 @@ function micMatchRatio(target, heard) {
   return hit / want.length;
 }
 
+// Hard stop on a single take, so a recording can never grow without bound if
+// recognition never reaches the threshold.
+const MIC_MAX_RECORD_MS = 40000;
+
+function micStatus(text, kind) {
+  $('#micRecStatus').textContent = text;
+  $('#micRecDot').className = `dot${kind ? ' ' + kind : ''}`;
+}
+
+function micSetPhase(phase) {
+  S.micPhase = phase;
+  const start = $('#micStartBtn');
+  const clear = $('#micClearBtn');
+  const cont = $('#micTestContinue');
+  if (phase === 'idle') {
+    start.hidden = false; start.disabled = false; start.textContent = 'Start voice recording';
+    clear.hidden = true;
+    cont.disabled = true;
+    micStatus('Microphone idle', '');
+  } else if (phase === 'recording') {
+    start.hidden = true;
+    clear.hidden = false; clear.disabled = false; clear.textContent = 'Clear & record again';
+    cont.disabled = true;
+    micStatus('Recording — read the sentence aloud', 'rec');
+  } else if (phase === 'saving') {
+    start.hidden = true;
+    clear.hidden = false; clear.disabled = true;
+    cont.disabled = true;
+    micStatus('Saving your recording…', 'ok');
+  } else if (phase === 'saved') {
+    start.hidden = true;
+    clear.hidden = false; clear.disabled = false; clear.textContent = 'Clear & record again';
+    cont.disabled = false;
+    micStatus('Voice captured and saved', 'ok');
+  } else if (phase === 'unsupported') {
+    start.hidden = true; clear.hidden = true; cont.disabled = true;
+    micStatus('Speech recognition unavailable in this browser', 'bad');
+  }
+}
+
+function micRenderMatch(shown) {
+  const want = micWords(S.micTarget).length;
+  const ratio = micMatchRatio(S.micTarget, shown);
+  const matched = Math.round(ratio * want);
+  const bar = $('#micMatchBar');
+  bar.style.width = `${Math.min(100, Math.round(ratio * 100))}%`;
+  bar.classList.toggle('low', ratio < MIC_MATCH_REQUIRED);
+  $('#micMatchCount').textContent = `${matched} of ${want} words`;
+  return ratio;
+}
+
 function beginMicTest() {
   $('#micTestPanel').classList.remove('hide');
   // The server assigns the sentence so it can check the transcript against the
   // one actually given, rather than trusting whatever the page claims.
   S.micTarget = S.micSentence || MIC_TEST_SENTENCES[Math.floor(Math.random() * MIC_TEST_SENTENCES.length)];
   $('#micSentence').textContent = S.micTarget;
-  $('#micTranscript').textContent = '';
-  // Continue stays locked until the candidate has read this exact sentence out
-  // loud AND the recording of it has been stored on the server.
+  micResetTake();
+  $('#micTestNote').textContent = 'Press start when you are ready to read the sentence.';
+  // Spoken guidance finishes before anything is armed, so the prompt itself is
+  // never recorded and never transcribed as if the candidate had said it.
+  speak('Press start voice recording, then read the sentence on the screen aloud, word for word.');
+}
+
+function micResetTake() {
   S.micTestPassed = false;
   S.micUploading = false;
-  S.loudFrames = 0;
-  S.micRestarts = 0;
   S.micHeard = '';
   S.micChunks = [];
-  $('#micTestContinue').disabled = true;
-  $('#micTestNote').textContent = 'Read the sentence above aloud to continue.';
-  startMicRecording();
-  speak('Now please read the sentence on the screen aloud, word for word. Your voice is being recorded for this check.',
-    () => micTestListen());
+  S.micRestarts = 0;
+  S.micLoud = false;
+  $('#micTranscript').textContent = '';
+  $('#micRecTimer').textContent = '00:00';
+  micRenderMatch('');
+  micSetPhase('idle');
 }
 
-// The reading is recorded and kept, so the admin can hear that the microphone
-// genuinely worked rather than taking the transcript's word for it.
-function startMicRecording() {
+/* ---------- recorder ---------- */
+
+function micStartRecorder() {
   S.micChunks = [];
   S.micRecorder = null;
-  if (!S.stream || !window.MediaRecorder) return;
+  if (!S.stream || !window.MediaRecorder) return false;
+  const tracks = S.stream.getAudioTracks();
+  if (!tracks.length) return false;
   try {
-    const audioOnly = new MediaStream(S.stream.getAudioTracks());
     const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'];
     const mimeType = types.find((t) => MediaRecorder.isTypeSupported(t));
-    const rec = new MediaRecorder(audioOnly, mimeType ? { mimeType } : undefined);
+    const rec = new MediaRecorder(new MediaStream(tracks), mimeType ? { mimeType } : undefined);
     rec.ondataavailable = (e) => { if (e.data && e.data.size) S.micChunks.push(e.data); };
-    rec.start(1000);
+    rec.start(500);
     S.micRecorder = rec;
-  } catch (_) { S.micRecorder = null; }
+    return true;
+  } catch (_) { return false; }
 }
 
-function stopMicRecording() {
+function micStopRecorder() {
   return new Promise((resolve) => {
     const rec = S.micRecorder;
-    if (!rec || rec.state === 'inactive') {
-      return resolve(S.micChunks.length ? new Blob(S.micChunks, { type: 'audio/webm' }) : null);
-    }
-    rec.onstop = () => resolve(S.micChunks.length ? new Blob(S.micChunks, { type: 'audio/webm' }) : null);
-    try { rec.stop(); } catch (_) { resolve(null); }
+    const collect = () => (S.micChunks.length ? new Blob(S.micChunks, { type: 'audio/webm' }) : null);
+    if (!rec || rec.state === 'inactive') return resolve(collect());
+    rec.onstop = () => resolve(collect());
+    try { rec.stop(); } catch (_) { resolve(collect()); }
   });
 }
 
-// Reaching the word threshold is only step one: the recording still has to be
-// uploaded and accepted before Continue unlocks.
-async function passMicTest() {
-  if (S.micTestPassed || S.micUploading) return;
+/* ---------- live waveform + timer ---------- */
+
+function micStartMeters() {
+  const canvas = $('#micWave');
+  const ctx2d = canvas.getContext('2d');
+  const started = Date.now();
+
+  S.micTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - started) / 1000);
+    $('#micRecTimer').textContent =
+      `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  }, 250);
+
+  try {
+    const actx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = actx.createMediaStreamSource(new MediaStream(S.stream.getAudioTracks()));
+    const an = actx.createAnalyser();
+    an.fftSize = 1024;
+    src.connect(an);
+    const buf = new Uint8Array(an.frequencyBinCount);
+    S.micAudioCtx = actx;
+
+    const draw = () => {
+      if (S.micPhase !== 'recording') return;
+      S.micWaveRaf = requestAnimationFrame(draw);
+      an.getByteTimeDomainData(buf);
+      const w = canvas.width = canvas.clientWidth || 600;
+      const h = canvas.height;
+      ctx2d.clearRect(0, 0, w, h);
+
+      let peak = 0;
+      for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      if (peak > 12) S.micLoud = true;
+
+      ctx2d.lineWidth = 2;
+      ctx2d.strokeStyle = peak > 12 ? '#6fd0b6' : '#46545f';
+      ctx2d.beginPath();
+      const step = w / buf.length;
+      for (let i = 0; i < buf.length; i++) {
+        const y = (buf[i] / 128) * (h / 2);
+        if (i === 0) ctx2d.moveTo(0, y); else ctx2d.lineTo(i * step, y);
+      }
+      ctx2d.stroke();
+    };
+    draw();
+  } catch (_) { /* the waveform is decoration; recording still works without it */ }
+}
+
+function micStopMeters() {
+  clearInterval(S.micTimer);
+  cancelAnimationFrame(S.micWaveRaf);
+  if (S.micAudioCtx) { try { S.micAudioCtx.close(); } catch (_) {} S.micAudioCtx = null; }
+  const canvas = $('#micWave');
+  try { canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height); } catch (_) {}
+}
+
+/* ---------- speech to text ---------- */
+
+function micStartRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    // Without recognition the sentence cannot be checked at all - and Slot 1
+    // needs it anyway, so stopping here is kinder than failing mid-interview.
+    $('#micTestWarn').classList.remove('hide');
+    $('#micTestNote').textContent = 'This browser cannot check your reading. Use Chrome or Edge to continue.';
+    micSetPhase('unsupported');
+    speak('This browser cannot capture speech. Please reopen your interview link in Chrome or Edge.');
+    return false;
+  }
+  const recog = new SR();
+  recog.continuous = true;
+  recog.interimResults = true;
+  recog.lang = navigator.language || 'en-IN';
+
+  recog.onresult = (e) => {
+    let finalChunk = '', interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalChunk += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    if (finalChunk) S.micHeard = (S.micHeard ? S.micHeard.trim() + ' ' : '') + finalChunk.trim();
+    const shown = (S.micHeard + (interim ? ' ' + interim : '')).trim();
+    $('#micTranscript').textContent = shown || '…';
+    const ratio = micRenderMatch(shown);
+    if (ratio >= MIC_MATCH_REQUIRED) {
+      // Keep the interim text in the transcript we submit, so a sentence finished
+      // on an interim result is not thrown away by stopping here.
+      if (!micWords(S.micHeard).length || micMatchRatio(S.micTarget, S.micHeard) < MIC_MATCH_REQUIRED) {
+        S.micHeard = shown;
+      }
+      micFinishTake();
+    } else {
+      $('#micTestNote').textContent = 'Keep reading the sentence above…';
+    }
+  };
+  recog.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      $('#micTestNote').textContent = 'Microphone access was blocked. Allow it, then reload this page.';
+      micStatus('Microphone blocked', 'bad');
+    } else if (e.error === 'audio-capture') {
+      $('#micTestNote').textContent = 'No microphone was found. Connect one and press start again.';
+      micStatus('No microphone found', 'bad');
+    }
+  };
+  recog.onend = () => {
+    // Recognition drops out after short pauses; restart while the take is live.
+    if (S.micPhase !== 'recording' || S.micRestarts >= 40) return;
+    S.micRestarts++;
+    try { recog.start(); } catch (_) {}
+  };
+  try { recog.start(); } catch (_) {}
+  S.micTestRecog = recog;
+  return true;
+}
+
+function micStopRecognition() {
+  if (!S.micTestRecog) return;
+  const recog = S.micTestRecog;
+  S.micTestRecog = null;
+  recog.onend = null;
+  try { recog.stop(); } catch (_) {}
+}
+
+/* ---------- take lifecycle ---------- */
+
+$('#micStartBtn').addEventListener('click', () => {
+  // Stop any spoken guidance first: otherwise it lands in the recording and gets
+  // transcribed as though the candidate had read it.
+  try { window.speechSynthesis.cancel(); } catch (_) {}
+  micResetTake();
+  if (!micStartRecorder()) {
+    $('#micTestNote').textContent = 'This browser cannot record audio. Use Chrome or Edge on a laptop or desktop.';
+    micStatus('Recording unavailable', 'bad');
+    return;
+  }
+  micSetPhase('recording');
+  $('#micTestNote').textContent = 'Listening — read the sentence aloud.';
+  if (!micStartRecognition()) {
+    micStopRecorder();
+    micStopMeters();
+    return;
+  }
+  micStartMeters();
+  clearTimeout(S.micMaxTimer);
+  S.micMaxTimer = setTimeout(() => {
+    if (S.micPhase === 'recording') micGiveUpTake();
+  }, MIC_MAX_RECORD_MS);
+});
+
+$('#micClearBtn').addEventListener('click', async () => {
+  clearTimeout(S.micMaxTimer);
+  micStopRecognition();
+  micStopMeters();
+  await micStopRecorder();
+  // Drop any stored recording server-side too, so a discarded take cannot leave
+  // the check counting as passed.
+  try {
+    await fetch(`/api/interview/${TOKEN}/mic-test`, { method: 'DELETE', credentials: 'same-origin' });
+  } catch (_) {}
+  micResetTake();
+  $('#micTestNote').textContent = 'Previous recording deleted. Press start to record again.';
+});
+
+// The sentence was recognised: stop, then upload. Continue only unlocks once the
+// server confirms the recording actually arrived.
+async function micFinishTake() {
+  if (S.micUploading || S.micPhase === 'saving' || S.micPhase === 'saved') return;
   S.micUploading = true;
-  clearInterval(S.micGateTimer);
-  if (S.micTestRecog) { try { S.micTestRecog.stop(); } catch (_) {} }
+  clearTimeout(S.micMaxTimer);
+  micSetPhase('saving');
+  micStopRecognition();
+  micStopMeters();
   $('#micTestNote').textContent = 'Saving your voice recording…';
 
-  const blob = await stopMicRecording();
+  const blob = await micStopRecorder();
   if (!blob || blob.size < 2048) {
-    $('#micTestNote').textContent = 'Your voice was not recorded. Check your microphone and read the sentence again.';
     S.micUploading = false;
-    S.micHeard = '';
-    startMicRecording();
-    micTestListen();
+    micSetPhase('idle');
+    micStatus('Nothing was recorded', 'bad');
+    $('#micTestNote').textContent = 'Your voice was not recorded. Check your microphone, then press start again.';
     return;
   }
   try {
@@ -453,92 +668,35 @@ async function passMicTest() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'The recording could not be saved.');
     S.micTestPassed = true;
+    micSetPhase('saved');
     $('#micTestNote').textContent = 'Microphone check passed — sentence read and recording saved.';
-    $('#micTestContinue').disabled = false;
   } catch (e) {
-    $('#micTestNote').textContent = `${e.message} Read the sentence aloud again.`;
-    S.micHeard = '';
-    startMicRecording();
-    micTestListen();
+    micSetPhase('idle');
+    micStatus('Could not save the recording', 'bad');
+    $('#micTestNote').textContent = `${e.message} Press start to record again.`;
   } finally {
     S.micUploading = false;
   }
 }
 
-function micTestGate() {
-  clearInterval(S.micGateTimer);
-  const startedAt = Date.now();
-  S.micGateTimer = setInterval(() => {
-    if (S.micTestPassed) { clearInterval(S.micGateTimer); return; }
-    if (Date.now() - startedAt < 7000) return;
-    // Distinguish "we hear nothing" from "we hear you but that is not the
-    // sentence", because the two need different things from the candidate.
-    if (S.loudFrames < MIC_LOUD_FRAMES_REQUIRED) {
-      $('#micTestNote').textContent =
-        'We cannot hear anything yet — check your microphone and read the sentence aloud.';
-    } else if (!S.micHeard) {
-      $('#micTestNote').textContent =
-        'We can hear sound but no words yet — read the sentence clearly, at a normal pace.';
-    }
-  }, 900);
-}
-
-function micTestListen() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
-    // Without recognition the sentence cannot be checked at all - and Slot 1
-    // needs it anyway, so stopping here is kinder than failing mid-interview.
-    S.micTestSR = false;
-    $('#micTestWarn').classList.remove('hide');
-    $('#micTestNote').textContent = 'This browser cannot check your reading. Use Chrome or Edge to continue.';
-    $('#micTestContinue').disabled = true;
-    speak('This browser cannot capture speech. Please reopen your interview link in Chrome or Edge.');
-    return;
-  }
-  S.micTestSR = true;
-  const recog = new SR();
-  recog.continuous = true;
-  recog.interimResults = true;
-  recog.lang = navigator.language || 'en-IN';
-  recog.onresult = (e) => {
-    let finalChunk = '', interim = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) finalChunk += e.results[i][0].transcript;
-      else interim += e.results[i][0].transcript;
-    }
-    if (finalChunk) S.micHeard = (S.micHeard ? S.micHeard.trim() + ' ' : '') + finalChunk.trim();
-    const shown = S.micHeard + (interim ? ' ' + interim : '');
-    $('#micTranscript').textContent = shown;
-
-    const want = micWords(S.micTarget).length;
-    const ratio = micMatchRatio(S.micTarget, shown);
-    if (ratio >= MIC_MATCH_REQUIRED) {
-      passMicTest();
-    } else {
-      $('#micTestNote').textContent =
-        `${Math.round(ratio * want)} of ${want} words matched — keep reading the sentence above.`;
-    }
-  };
-  recog.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-      $('#micTestNote').textContent = 'Microphone access was blocked. Allow it, then reload this page.';
-    }
-  };
-  recog.onend = () => {
-    // Recognition drops out after pauses; keep it alive until they pass, with a
-    // cap so a permanently broken service cannot spin forever.
-    if (S.micTestPassed || S.micRestarts >= 30) return;
-    if ($('#micTestPanel').classList.contains('hide')) return;
-    S.micRestarts++;
-    try { recog.start(); } catch (_) {}
-  };
-  try { recog.start(); } catch (_) {}
-  S.micTestRecog = recog;
-  micTestGate();
+// Ran out of time on this take without matching the sentence.
+async function micGiveUpTake() {
+  micStopRecognition();
+  micStopMeters();
+  await micStopRecorder();
+  micSetPhase('idle');
+  const heard = micWords(S.micHeard).length;
+  micStatus('Recording stopped', 'bad');
+  $('#micTestNote').textContent = !S.micLoud
+    ? 'We could not hear anything. Check that your microphone is not muted, then press start again.'
+    : heard
+      ? 'That did not match the sentence. Press start and read it again, word for word.'
+      : 'We heard sound but no clear words. Press start and read the sentence at a normal pace.';
 }
 
 $('#micTestContinue').addEventListener('click', () => {
-  if (S.micTestRecog) { try { S.micTestRecog.stop(); } catch (_) {} }
+  micStopRecognition();
+  micStopMeters();
   $('#micTestPanel').classList.add('hide');
   $('#readyPanel').classList.remove('hide');
   speak('Verification complete. Press start interview when you are ready.');
@@ -1192,7 +1350,8 @@ function finished(title, body, mark) {
   clearInterval(S.tick);
   clearInterval(S.faceTimer);
   clearInterval(S.monitorTimer);
-  clearInterval(S.micGateTimer);
+  clearInterval(S.micTimer);
+  clearTimeout(S.micMaxTimer);
   clearInterval(S.voiceTimer);
   clearInterval(S.deviceTimer);
   stopListening();

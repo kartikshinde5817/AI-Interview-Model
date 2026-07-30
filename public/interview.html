@@ -125,13 +125,36 @@
       <!-- ---- step 3: mic test ---- -->
       <div id="micTestPanel" class="hide" style="margin-top:22px">
         <h2>Microphone check</h2>
-        <p>Read this sentence aloud, clearly:</p>
+        <p>Press <b>Start voice recording</b>, then read this sentence aloud, clearly:</p>
         <div class="qtext" id="micSentence" style="font-size:17px"></div>
+
+        <div class="mic-rec">
+          <div class="mic-rec-head">
+            <span class="check-row" style="margin:0">
+              <span class="dot" id="micRecDot"></span>
+              <span id="micRecStatus">Microphone idle</span>
+            </span>
+            <span class="spacer"></span>
+            <span class="hud-label">Recording</span>
+            <span class="clock" id="micRecTimer" style="font-size:19px">00:00</span>
+          </div>
+          <canvas id="micWave" class="mic-wave" height="64"></canvas>
+          <div class="mic-progress">
+            <span class="bar" style="flex:1"><i id="micMatchBar" style="width:0%"></i></span>
+            <span class="mono" id="micMatchCount" style="font-size:12.5px;min-width:96px;text-align:right">0 of 0 words</span>
+          </div>
+        </div>
+
+        <div class="hud-label" style="margin:16px 0 6px">Recognised speech</div>
         <div id="micTranscript" class="answer" style="white-space:pre-wrap;min-height:60px"></div>
         <div id="micTestWarn" class="banner hide">Speech recognition is not available in this browser, so your reading cannot be checked — and Slot 1 needs it to capture your spoken answers. Reopen your interview link in Chrome or Edge to continue.</div>
         <div class="qfoot">
-          <span class="note" id="micTestNote">Read the sentence above aloud to continue.</span>
-          <button class="btn go" id="micTestContinue" disabled>Continue</button>
+          <span class="note" id="micTestNote">Press start when you are ready to read the sentence.</span>
+          <span style="display:flex;gap:8px">
+            <button class="btn ghost" id="micClearBtn" type="button" hidden>Clear &amp; record again</button>
+            <button class="btn" id="micStartBtn" type="button">Start voice recording</button>
+            <button class="btn go" id="micTestContinue" disabled>Continue</button>
+          </span>
         </div>
       </div>
 

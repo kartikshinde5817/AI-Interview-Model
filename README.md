@@ -166,16 +166,26 @@ its verdict, time, score and strike number, so you can see exactly what the came
 ### Microphone check
 
 The candidate is shown a sentence — **chosen by the server**, so the transcript can be checked
-against the sentence actually given rather than one the page claims to have shown. They must:
+against the sentence actually given rather than one the page claims to have shown.
 
-1. read that sentence aloud (≥70% of its words recognised), **and**
-2. have the reading captured as an audio recording that uploads successfully.
+Recording is an explicit, candidate-controlled step:
 
-Only when the server has stored a non-empty recording *and* accepted the transcript does
-**Continue** unlock. A silent or muted microphone, an empty recording, or reading the wrong
-words all keep it disabled, with a message saying which of those went wrong. The recording is
-kept and is playable in the admin panel next to the sentence given and the words heard — so you
-can confirm the microphone genuinely worked rather than trusting a transcript.
+- **Start voice recording** arms the recorder and real-time speech-to-text together. Nothing is
+  captured until it is pressed, which also means the spoken on-screen guidance can never end up
+  inside the recording or be transcribed as if the candidate had said it.
+- While recording, the panel shows **live microphone status**, a **recording timer**, a **live
+  audio waveform** (which turns green when it can actually hear you), the **recognised speech as
+  it is transcribed**, and a progress bar counting matched words ("7 of 11 words").
+- **Clear & record again** deletes the take — locally *and* on the server — and returns to idle,
+  so a discarded recording can never leave the check counting as passed.
+
+The take ends automatically the moment the sentence is recognised, uploads, and only once the
+server confirms a stored non-empty recording does **Continue** unlock. If 40 seconds pass without
+a match the take stops and says specifically what went wrong — nothing heard at all, sound but no
+clear words, or words that did not match the sentence.
+
+The recording is kept and is playable in the admin panel next to the sentence given and the words
+heard, so you can confirm the microphone genuinely worked rather than trusting a transcript.
 
 ### Nothing starts until all three pass
 

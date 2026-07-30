@@ -2499,6 +2499,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.json({**res, "strike": strike, "maxStrikes": MAX_FACE_STRIKES,
                               "terminated": terminated})
 
+        if action == "mic-test" and method == "DELETE":
+            # "Clear & record again": the stored take is thrown away so a discarded
+            # recording can never leave the check counting as passed.
+            old = (c.get("micTest") or {}).get("file")
+            c["micTest"] = None
+            c["micTestPassed"] = False
+            save()
+            if old:
+                try:
+                    os.remove(os.path.join(MICTESTS, old))
+                except OSError:
+                    pass
+            return self.json({"ok": True})
+
         if action == "mic-test" and method == "POST":
             body = self.body_bytes()
             if c["status"] not in ("invited", "in_progress"):
