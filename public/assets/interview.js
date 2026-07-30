@@ -32,6 +32,7 @@ const S = {
   verifyStream: null, verifyShot: null, faceTimer: null, voiceTimer: null, deviceTimer: null,
   needsAadhaar: false, aadhaarOk: false,
   loudFrames: 0, micTestPassed: false, micGateTimer: null, micTestSR: true,
+  micTarget: '', micHeard: '', micRestarts: 0,
   strikes: { device: 0, voice: 0 }, lastStrikeAt: { device: 0, voice: 0 },
   gameSeq: [], gamePick: [], gamePlaying: false, pendingNext: null, isLast: false,
 };
@@ -342,28 +343,57 @@ $('#retakeBtn').addEventListener('click', () => {
   $('#micTestContinue').disabled = true;
 });
 
-// Minimum number of above-noise audio frames that counts as "they spoke".
-// At ~60fps this is roughly two thirds of a second of actual sound.
+// Minimum number of above-noise audio frames that counts as sound reaching the
+// mic at all. This only drives the "we cannot hear you" hint - it never unlocks
+// Continue on its own, because sound is not the same as reading the sentence.
 const MIC_LOUD_FRAMES_REQUIRED = 40;
+// Share of the sentence's words that must come back from recognition. Below 1.0
+// so an odd mis-heard word does not trap someone who genuinely read it out.
+const MIC_MATCH_REQUIRED = 0.7;
+
+const micWords = (s) => String(s || '')
+  .toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ')
+  .split(/\s+/)
+  .filter(Boolean);
+
+// How much of the target sentence appears in what was heard, counting each word
+// only as many times as the sentence actually uses it.
+function micMatchRatio(target, heard) {
+  const want = micWords(target);
+  if (!want.length) return 0;
+  const pool = new Map();
+  for (const w of micWords(heard)) pool.set(w, (pool.get(w) || 0) + 1);
+  let hit = 0;
+  for (const w of want) {
+    const n = pool.get(w) || 0;
+    if (n > 0) { hit++; pool.set(w, n - 1); }
+  }
+  return hit / want.length;
+}
 
 function beginMicTest() {
   $('#micTestPanel').classList.remove('hide');
-  const sentence = MIC_TEST_SENTENCES[Math.floor(Math.random() * MIC_TEST_SENTENCES.length)];
-  $('#micSentence').textContent = sentence;
+  S.micTarget = MIC_TEST_SENTENCES[Math.floor(Math.random() * MIC_TEST_SENTENCES.length)];
+  $('#micSentence').textContent = S.micTarget;
   $('#micTranscript').textContent = '';
-  // Continue stays locked until the candidate has actually spoken - nothing
-  // here ever unlocks it on a timer alone.
+  // Continue stays locked until the candidate has read this exact sentence out
+  // loud. No timer, no mere noise, and no browser quirk unlocks it.
   S.micTestPassed = false;
   S.loudFrames = 0;
+  S.micRestarts = 0;
+  S.micHeard = '';
   $('#micTestContinue').disabled = true;
-  $('#micTestNote').textContent = 'Waiting for you to read the sentence aloud…';
-  speak('Now please read the sentence on the screen aloud, so we can check your microphone.', () => micTestListen());
+  $('#micTestNote').textContent = 'Read the sentence above aloud to continue.';
+  speak('Now please read the sentence on the screen aloud, word for word, so we can check your microphone.',
+    () => micTestListen());
 }
 
 function passMicTest(note) {
   if (S.micTestPassed) return;
   S.micTestPassed = true;
   clearInterval(S.micGateTimer);
+  if (S.micTestRecog) { try { S.micTestRecog.stop(); } catch (_) {} }
   $('#micTestNote').textContent = note;
   $('#micTestContinue').disabled = false;
 }
@@ -373,29 +403,32 @@ function micTestGate() {
   const startedAt = Date.now();
   S.micGateTimer = setInterval(() => {
     if (S.micTestPassed) { clearInterval(S.micGateTimer); return; }
-    const waited = Date.now() - startedAt;
-    const spoke = S.loudFrames >= MIC_LOUD_FRAMES_REQUIRED;
-    // Transcribed words are the preferred proof. Measured microphone level is the
-    // fallback for browsers where recognition never fires, or where it stalls.
-    if (spoke && (!S.micTestSR || waited > 9000)) {
-      passMicTest('Your voice was picked up by the microphone.');
-    } else if (!spoke && waited > 8000) {
-      $('#micTestNote').textContent = 'We cannot hear you yet — read the sentence aloud, a little louder.';
+    if (Date.now() - startedAt < 7000) return;
+    // Distinguish "we hear nothing" from "we hear you but that is not the
+    // sentence", because the two need different things from the candidate.
+    if (S.loudFrames < MIC_LOUD_FRAMES_REQUIRED) {
+      $('#micTestNote').textContent =
+        'We cannot hear anything yet — check your microphone and read the sentence aloud.';
+    } else if (!S.micHeard) {
+      $('#micTestNote').textContent =
+        'We can hear sound but no words yet — read the sentence clearly, at a normal pace.';
     }
-  }, 700);
+  }, 900);
 }
 
 function micTestListen() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
+    // Without recognition the sentence cannot be checked at all - and Slot 1
+    // needs it anyway, so stopping here is kinder than failing mid-interview.
     S.micTestSR = false;
     $('#micTestWarn').classList.remove('hide');
-    $('#micTestNote').textContent = 'Read the sentence aloud so we can hear your microphone.';
-    micTestGate();
+    $('#micTestNote').textContent = 'This browser cannot check your reading. Use Chrome or Edge to continue.';
+    $('#micTestContinue').disabled = true;
+    speak('This browser cannot capture speech. Please reopen your interview link in Chrome or Edge.');
     return;
   }
   S.micTestSR = true;
-  let heard = '';
   const recog = new SR();
   recog.continuous = true;
   recog.interimResults = true;
@@ -406,13 +439,32 @@ function micTestListen() {
       if (e.results[i].isFinal) finalChunk += e.results[i][0].transcript;
       else interim += e.results[i][0].transcript;
     }
-    if (finalChunk) heard = (heard ? heard.trim() + ' ' : '') + finalChunk.trim();
-    $('#micTranscript').textContent = heard + (interim ? ' ' + interim : '');
-    if ((heard + interim).trim().split(/\s+/).length >= 3) {
-      passMicTest('Microphone check passed.');
+    if (finalChunk) S.micHeard = (S.micHeard ? S.micHeard.trim() + ' ' : '') + finalChunk.trim();
+    const shown = S.micHeard + (interim ? ' ' + interim : '');
+    $('#micTranscript').textContent = shown;
+
+    const want = micWords(S.micTarget).length;
+    const ratio = micMatchRatio(S.micTarget, shown);
+    if (ratio >= MIC_MATCH_REQUIRED) {
+      passMicTest('Microphone check passed — the sentence was read correctly.');
+    } else {
+      $('#micTestNote').textContent =
+        `${Math.round(ratio * want)} of ${want} words matched — keep reading the sentence above.`;
     }
   };
-  recog.onend = () => {};
+  recog.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      $('#micTestNote').textContent = 'Microphone access was blocked. Allow it, then reload this page.';
+    }
+  };
+  recog.onend = () => {
+    // Recognition drops out after pauses; keep it alive until they pass, with a
+    // cap so a permanently broken service cannot spin forever.
+    if (S.micTestPassed || S.micRestarts >= 30) return;
+    if ($('#micTestPanel').classList.contains('hide')) return;
+    S.micRestarts++;
+    try { recog.start(); } catch (_) {}
+  };
   try { recog.start(); } catch (_) {}
   S.micTestRecog = recog;
   micTestGate();

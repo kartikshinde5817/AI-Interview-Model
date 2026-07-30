@@ -141,10 +141,17 @@ registered photo on file, so they skip both gates and keep the original photo-on
 
 ### Microphone check
 
-Before the interview can be started the candidate must actually speak: the **Continue** button
-on the microphone check stays disabled until either speech recognition transcribes at least
-three words, or the measured microphone level proves sustained sound. No timeout unlocks it on
-its own, so a silent or muted microphone cannot be skipped past.
+The candidate is shown a sentence and must read **that sentence** aloud before the interview can
+be started. **Continue** stays disabled until speech recognition returns at least 70% of the
+sentence's words (so 8 of 11 on a typical one) — the live count is shown as they read, e.g.
+"6 of 11 words matched". Nothing else unlocks it: not a timeout, not background noise, not
+saying a few unrelated words. Words are counted only as often as the sentence uses them, so
+repeating a single word cannot game the score.
+
+Because the reading cannot be verified without speech recognition — and Slot 1 needs it to
+capture spoken answers anyway — browsers without it (Safari, Firefox) are stopped at this step
+and told to reopen the link in Chrome or Edge, rather than being let through into an interview
+they cannot complete.
 
 ---
 
