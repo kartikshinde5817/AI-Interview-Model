@@ -32,7 +32,9 @@ const S = {
   verifyStream: null, verifyShot: null, faceTimer: null, voiceTimer: null, deviceTimer: null,
   needsAadhaar: false, aadhaarOk: false,
   loudFrames: 0, micTestPassed: false, micGateTimer: null, micTestSR: true,
-  micTarget: '', micHeard: '', micRestarts: 0,
+  micTarget: '', micHeard: '', micRestarts: 0, micSentence: '',
+  micRecorder: null, micChunks: [], micUploading: false,
+  monitorTimer: null, monitorBusy: false,
   strikes: { device: 0, voice: 0 }, lastStrikeAt: { device: 0, voice: 0 },
   gameSeq: [], gamePick: [], gamePlaying: false, pendingNext: null, isLast: false,
 };
@@ -76,6 +78,7 @@ async function boot() {
   S.inSlot1 = st.inSlot1;
   S.needsAadhaar = !!st.needsAadhaar;
   S.aadhaarOk = !!st.aadhaarVerified;
+  S.micSentence = st.micSentence || '';
 
   if (st.status === 'completed') {
     finished('Interview Submitted Successfully', 'Your final responses have been saved. Scoring your interview…', '✓');
@@ -374,28 +377,92 @@ function micMatchRatio(target, heard) {
 
 function beginMicTest() {
   $('#micTestPanel').classList.remove('hide');
-  S.micTarget = MIC_TEST_SENTENCES[Math.floor(Math.random() * MIC_TEST_SENTENCES.length)];
+  // The server assigns the sentence so it can check the transcript against the
+  // one actually given, rather than trusting whatever the page claims.
+  S.micTarget = S.micSentence || MIC_TEST_SENTENCES[Math.floor(Math.random() * MIC_TEST_SENTENCES.length)];
   $('#micSentence').textContent = S.micTarget;
   $('#micTranscript').textContent = '';
   // Continue stays locked until the candidate has read this exact sentence out
-  // loud. No timer, no mere noise, and no browser quirk unlocks it.
+  // loud AND the recording of it has been stored on the server.
   S.micTestPassed = false;
+  S.micUploading = false;
   S.loudFrames = 0;
   S.micRestarts = 0;
   S.micHeard = '';
+  S.micChunks = [];
   $('#micTestContinue').disabled = true;
   $('#micTestNote').textContent = 'Read the sentence above aloud to continue.';
-  speak('Now please read the sentence on the screen aloud, word for word, so we can check your microphone.',
+  startMicRecording();
+  speak('Now please read the sentence on the screen aloud, word for word. Your voice is being recorded for this check.',
     () => micTestListen());
 }
 
-function passMicTest(note) {
-  if (S.micTestPassed) return;
-  S.micTestPassed = true;
+// The reading is recorded and kept, so the admin can hear that the microphone
+// genuinely worked rather than taking the transcript's word for it.
+function startMicRecording() {
+  S.micChunks = [];
+  S.micRecorder = null;
+  if (!S.stream || !window.MediaRecorder) return;
+  try {
+    const audioOnly = new MediaStream(S.stream.getAudioTracks());
+    const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'];
+    const mimeType = types.find((t) => MediaRecorder.isTypeSupported(t));
+    const rec = new MediaRecorder(audioOnly, mimeType ? { mimeType } : undefined);
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) S.micChunks.push(e.data); };
+    rec.start(1000);
+    S.micRecorder = rec;
+  } catch (_) { S.micRecorder = null; }
+}
+
+function stopMicRecording() {
+  return new Promise((resolve) => {
+    const rec = S.micRecorder;
+    if (!rec || rec.state === 'inactive') {
+      return resolve(S.micChunks.length ? new Blob(S.micChunks, { type: 'audio/webm' }) : null);
+    }
+    rec.onstop = () => resolve(S.micChunks.length ? new Blob(S.micChunks, { type: 'audio/webm' }) : null);
+    try { rec.stop(); } catch (_) { resolve(null); }
+  });
+}
+
+// Reaching the word threshold is only step one: the recording still has to be
+// uploaded and accepted before Continue unlocks.
+async function passMicTest() {
+  if (S.micTestPassed || S.micUploading) return;
+  S.micUploading = true;
   clearInterval(S.micGateTimer);
   if (S.micTestRecog) { try { S.micTestRecog.stop(); } catch (_) {} }
-  $('#micTestNote').textContent = note;
-  $('#micTestContinue').disabled = false;
+  $('#micTestNote').textContent = 'Saving your voice recording…';
+
+  const blob = await stopMicRecording();
+  if (!blob || blob.size < 2048) {
+    $('#micTestNote').textContent = 'Your voice was not recorded. Check your microphone and read the sentence again.';
+    S.micUploading = false;
+    S.micHeard = '';
+    startMicRecording();
+    micTestListen();
+    return;
+  }
+  try {
+    const fd = new FormData();
+    fd.append('audio', blob, 'mictest.webm');
+    fd.append('transcript', S.micHeard);
+    const res = await fetch(`/api/interview/${TOKEN}/mic-test`, {
+      method: 'POST', credentials: 'same-origin', body: fd,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'The recording could not be saved.');
+    S.micTestPassed = true;
+    $('#micTestNote').textContent = 'Microphone check passed — sentence read and recording saved.';
+    $('#micTestContinue').disabled = false;
+  } catch (e) {
+    $('#micTestNote').textContent = `${e.message} Read the sentence aloud again.`;
+    S.micHeard = '';
+    startMicRecording();
+    micTestListen();
+  } finally {
+    S.micUploading = false;
+  }
 }
 
 function micTestGate() {
@@ -446,7 +513,7 @@ function micTestListen() {
     const want = micWords(S.micTarget).length;
     const ratio = micMatchRatio(S.micTarget, shown);
     if (ratio >= MIC_MATCH_REQUIRED) {
-      passMicTest('Microphone check passed — the sentence was read correctly.');
+      passMicTest();
     } else {
       $('#micTestNote').textContent =
         `${Math.round(ratio * want)} of ${want} words matched — keep reading the sentence above.`;
@@ -582,29 +649,55 @@ function warnStrike(kind, message, evidenceBlob) {
   }
 }
 
+// Live identity monitoring. Frames go to the server, which runs the same face
+// recogniser used for the verification photo and compares against the registered
+// candidate - so this cannot be defeated by tampering with the page, and it works
+// in every browser rather than only those with a built-in face detector.
+const FACE_MONITOR_INTERVAL_MS = 12000;
+
+const FACE_WARNINGS = {
+  no_face: 'You are not visible in the camera. Stay in front of your camera.',
+  multiple_faces: 'Another person is visible in the camera. You must be alone.',
+  different_person: 'The person on camera does not match your registered photo.',
+};
+
+function startFaceMonitor() {
+  clearInterval(S.monitorTimer);
+  S.monitorTimer = setInterval(async () => {
+    if (S.ended || S.monitorBusy) return;
+    S.monitorBusy = true;
+    try {
+      const blob = await captureSnapshot();
+      if (!blob) return;
+      const res = await fetch(`/api/interview/${TOKEN}/face-check`, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: blob,
+      });
+      const data = await res.json().catch(() => ({}));
+      const warning = FACE_WARNINGS[data.verdict];
+      if (!warning) return;
+
+      if (data.terminated) {
+        showTopWarning(`⚠ ${warning}`);
+        return finished('Result: Fail',
+          'The interview was ended because the identity checks on your camera failed repeatedly. This attempt is recorded as a fail.', '×');
+      }
+      if (data.confirming) {
+        // First sighting - warn, but it has not cost a strike yet.
+        showTopWarning(`⚠ ${warning}`);
+        return;
+      }
+      if (data.strike) {
+        showTopWarning(`⚠ ${warning} (Warning ${data.strike} of ${data.maxStrikes || 3})`);
+      }
+    } catch (_) { /* a dropped check is retried on the next tick */ }
+    finally { S.monitorBusy = false; }
+  }, FACE_MONITOR_INTERVAL_MS);
+}
+
 function startProctorWatch() {
-  if ('FaceDetector' in window) {
-    let detector;
-    try { detector = new FaceDetector({ fastMode: true, maxDetectedFaces: 5 }); } catch (_) { detector = null; }
-    if (detector) {
-      let strikes = 0;
-      S.faceTimer = setInterval(async () => {
-        if (S.ended) return;
-        try {
-          const faces = await detector.detect($('#hudCam'));
-          if (faces.length > 1) {
-            strikes++;
-            if (strikes >= 2) {
-              reportAlert('multiple_faces', `${faces.length} faces were detected in the camera frame at the same time.`);
-              showTopWarning('⚠ Another person appears to be in frame.');
-              captureSnapshot().then((b) => uploadEvidence('multiple_faces', b));
-              strikes = 0;
-            }
-          } else strikes = 0;
-        } catch (_) { /* detector can fail transiently, ignore */ }
-      }, 6000);
-    }
-  }
+  startFaceMonitor();
   startVoiceWatch();
   startDeviceWatch();
 }
@@ -1098,6 +1191,8 @@ function finished(title, body, mark) {
   S.armed = false;
   clearInterval(S.tick);
   clearInterval(S.faceTimer);
+  clearInterval(S.monitorTimer);
+  clearInterval(S.micGateTimer);
   clearInterval(S.voiceTimer);
   clearInterval(S.deviceTimer);
   stopListening();

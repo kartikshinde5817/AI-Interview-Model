@@ -136,6 +136,53 @@ clears all identity state so a genuine candidate can start over.
 Set where alerts go with the `adminNotifyEmail` setting in the dashboard, or the `ADMIN_EMAIL`
 environment variable.
 
+### Live face monitoring during the interview
+
+Passing the photo check is not the end of it. Once the interview is running, a camera frame is
+sent to the server every 12 seconds and put through the same recogniser, compared against the
+registered photo. Four verdicts:
+
+| Verdict | Meaning |
+|---|---|
+| `ok` | The registered candidate is on camera, alone. Frame is discarded. |
+| `no_face` | Nobody is visible — the candidate has left the frame. |
+| `multiple_faces` | More than one person is in shot. |
+| `different_person` | Someone is there, but it is not the registered candidate. |
+
+A problem must appear on **two consecutive checks** before it costs a strike, so glancing away
+for a moment is not punished. Each strike shows the candidate an immediate on-screen warning
+("Another person is visible in the camera. You must be alone. Warning 2 of 3") and records the
+event with its timestamp, the question number, the face count, the similarity score and a
+**screenshot of that exact moment**. Three strikes ends the interview as a fail, matching what
+the invitation email tells candidates.
+
+Because the comparison runs on the server, it cannot be switched off by tampering with the page,
+and it works in every browser — the previous version relied on a Chrome-only face detector that
+could only count faces, never tell *who* they were.
+
+The candidate record gets a **Live face monitoring** card showing each event as a thumbnail with
+its verdict, time, score and strike number, so you can see exactly what the camera saw.
+
+### Microphone check
+
+The candidate is shown a sentence — **chosen by the server**, so the transcript can be checked
+against the sentence actually given rather than one the page claims to have shown. They must:
+
+1. read that sentence aloud (≥70% of its words recognised), **and**
+2. have the reading captured as an audio recording that uploads successfully.
+
+Only when the server has stored a non-empty recording *and* accepted the transcript does
+**Continue** unlock. A silent or muted microphone, an empty recording, or reading the wrong
+words all keep it disabled, with a message saying which of those went wrong. The recording is
+kept and is playable in the admin panel next to the sentence given and the words heard — so you
+can confirm the microphone genuinely worked rather than trusting a transcript.
+
+### Nothing starts until all three pass
+
+`/start` refuses on the server unless the Aadhaar number is verified, a verification photo
+exists and its face check did not fail, and the microphone check is complete. These are enforced
+server-side, so the button being clickable in the page is never what decides it.
+
 Candidates added by hand rather than through the application form have no Aadhaar and no
 registered photo on file, so they skip both gates and keep the original photo-only verification.
 
@@ -190,6 +237,9 @@ Enforced automatically once the interview starts:
 | Page closed or reloaded | Interview ends |
 | Copy, cut, paste, right-click, `Ctrl`/`Cmd` shortcuts, `F12` | Blocked |
 | Camera or microphone denied | Cannot start |
+| Candidate leaves the camera frame | Warning, then ends on the 3rd strike |
+| A second person appears on camera | Warning, then ends on the 3rd strike |
+| A different person replaces the candidate | Warning, then ends on the 3rd strike |
 
 Every event is written to the candidate record with a timestamp and the question number it
 happened on. An ended interview is submitted as it stands and cannot be restarted by the

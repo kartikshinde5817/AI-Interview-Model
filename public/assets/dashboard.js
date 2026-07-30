@@ -367,15 +367,62 @@ function detailHtml(c) {
     ${faceBlock}
   </div>` : '';
 
+  const MONITOR_LABEL = {
+    no_face: 'Candidate not visible',
+    multiple_faces: 'More than one person on camera',
+    different_person: 'Different person on camera',
+  };
+  const monitoring = (c.faceEvents || []).length ? `<div class="card" style="border-color:#e6c4bf">
+    <h3 style="color:var(--record)">Live face monitoring — ${c.faceEvents.length} event${c.faceEvents.length === 1 ? '' : 's'}</h3>
+    <p class="hint" style="margin-top:0">The camera was checked against the registered photo every 12 seconds during the interview. Strike ${c.faceStrikes} of ${c.maxFaceStrikes} reached.</p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      ${c.faceEvents.map((ev) => `
+        <div style="width:170px">
+          <a href="/api/admin/candidates/${c.id}/evidence/${encodeURIComponent(ev.evidenceFile)}" target="_blank">
+            <img src="/api/admin/candidates/${c.id}/evidence/${encodeURIComponent(ev.evidenceFile)}"
+                 alt="${esc(MONITOR_LABEL[ev.type] || ev.type)}"
+                 style="width:170px;height:128px;object-fit:cover;border-radius:4px;border:1px solid var(--line);display:block">
+          </a>
+          <div style="font-size:12.5px;font-weight:600;margin-top:6px;color:var(--record)">${esc(MONITOR_LABEL[ev.type] || ev.type)}</div>
+          <div class="mono" style="font-size:11.5px;color:var(--graphite)">
+            ${fmtDate(ev.at)}${ev.atQuestion ? ` · Q${ev.atQuestion}` : ''}<br>
+            ${ev.faces != null ? `${ev.faces} face${ev.faces === 1 ? '' : 's'}` : ''}${ev.score != null ? ` · score ${ev.score}` : ''}<br>
+            strike ${ev.strike || '—'}
+          </div>
+        </div>`).join('')}
+    </div>
+  </div>` : (c.status === 'invited' ? '' : `<div class="card">
+    <h3>Live face monitoring</h3>
+    <p style="font-size:14px;color:var(--graphite);margin:0">No identity problems were detected on camera during this interview.</p>
+  </div>`);
+
+  const micTest = c.micTest ? `<div class="card">
+    <h3>Microphone check</h3>
+    <dl class="kv">
+      <dt>Sentence given</dt><dd style="font-size:13.5px">${esc(c.micTest.sentence || '—')}</dd>
+      <dt>What was heard</dt><dd style="font-size:13.5px">${esc(c.micTest.transcript || '—')}</dd>
+      <dt>Words matched</dt><dd class="mono">${Math.round((c.micTest.matchRatio || 0) * 100)}%</dd>
+      <dt>Recorded at</dt><dd>${fmtDate(c.micTest.capturedAt)}</dd>
+      <dt>Recording size</dt><dd class="mono">${((c.micTest.bytes || 0) / 1024).toFixed(0)} KB</dd>
+    </dl>
+    <audio controls preload="metadata" src="/api/admin/candidates/${c.id}/mic-test" style="width:100%;margin-top:12px"></audio>
+  </div>` : `<div class="card">
+    <h3>Microphone check</h3>
+    <p style="font-size:14px;color:var(--graphite);margin:0">Not completed — no voice recording was captured.</p>
+  </div>`;
+
   const flags = c.violations.length ? `<div class="card" style="border-color:#e6c4bf">
     <h3 style="color:var(--record)">Integrity flags</h3>
     <ul class="plain">${c.violations.map((v) => `<li><span class="mono">${fmtDate(v.at)}</span> — ${esc(v.type)}${v.detail ? `: ${esc(v.detail)}` : ''} (at question ${v.atQuestion})</li>`).join('')}</ul>
   </div>` : '';
 
-  const evidence = (c.evidenceShots || []).length ? `<div class="card">
+  // Face-monitoring frames live in evidenceShots too (that is what authorises
+  // serving them), but they are shown in their own card above, not twice.
+  const otherEvidence = (c.evidenceShots || []).filter((s) => !MONITOR_LABEL[s.type]);
+  const evidence = otherEvidence.length ? `<div class="card">
     <h3>Evidence photos</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      ${c.evidenceShots.map((s) => `
+      ${otherEvidence.map((s) => `
         <a href="/api/admin/candidates/${c.id}/evidence/${s.file}" target="_blank" style="text-align:center">
           <img src="/api/admin/candidates/${c.id}/evidence/${s.file}" style="width:110px;height:82px;object-fit:cover;border-radius:4px;border:1px solid var(--line);display:block">
           <span class="hint" style="margin:4px 0 0;display:block">${esc(s.type)} · Q${s.atQuestion}</span>
@@ -449,7 +496,7 @@ function detailHtml(c) {
     }).join('')}
   </div>` : '';
 
-  return overview + identity + flags + evidence + report + recording + slot1 + slot2;
+  return overview + identity + monitoring + micTest + flags + evidence + report + recording + slot1 + slot2;
 }
 
 /* ---------------- edit profile ---------------- */

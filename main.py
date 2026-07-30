@@ -69,6 +69,7 @@ VERIFICATIONS = os.path.join(DATA, "verifications")
 EVIDENCE = os.path.join(DATA, "evidence")
 PHOTOS = os.path.join(DATA, "photos")
 MODELS = os.path.join(DATA, "models")
+MICTESTS = os.path.join(DATA, "mictests")
 DB_FILE = os.path.join(DATA, "db.json")
 
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # applies to the public, unauthenticated /api/apply endpoint
@@ -78,6 +79,24 @@ PHOTO_EXTS = (".jpg", ".jpeg", ".png")
 # SFace's own documented cosine cut-off for "same person".
 SFACE_COSINE_THRESHOLD = 0.363
 MAX_FACE_ATTEMPTS = 3
+
+# Live monitoring during the interview. A problem has to show up on two
+# consecutive checks before it counts as a strike, so a candidate who glances
+# away for a moment is not punished for it; three strikes ends the attempt.
+MAX_FACE_STRIKES = 3
+FACE_STRIKE_CONFIRMATIONS = 2
+
+# The microphone check: the server picks the sentence so it can verify what came
+# back, rather than trusting the page to say which sentence it displayed.
+MIC_TEST_SENTENCES = [
+    "The quick fox jumped over the lazy dog near the riverbank.",
+    "Clear communication is one of the most valuable skills in any team.",
+    "Please schedule the review meeting for Tuesday afternoon.",
+    "Good preparation makes a difficult interview much easier to handle.",
+    "Technology keeps changing the way people work together.",
+]
+MIC_MATCH_REQUIRED = 0.7
+MIN_MIC_RECORDING_BYTES = 2048
 
 
 def env(key, default):
@@ -126,7 +145,7 @@ CFG = {
     "admin_email": env("ADMIN_EMAIL", ""),
 }
 
-for d in (DATA, UPLOADS, RECORDINGS, VERIFICATIONS, EVIDENCE, PHOTOS, MODELS):
+for d in (DATA, UPLOADS, RECORDINGS, VERIFICATIONS, EVIDENCE, PHOTOS, MODELS, MICTESTS):
     os.makedirs(d, exist_ok=True)
 
 
@@ -185,6 +204,8 @@ CANDIDATE_DEFAULTS = {
     "scheduleStart": None, "scheduleEnd": None, "username": None, "password": None,
     "applicationId": None, "aadhaarVerified": False, "aadhaarAttempts": 0,
     "faceMatch": None, "faceAttempts": 0, "identityBlocked": False,
+    "faceEvents": [], "faceStrikes": 0, "facePending": None,
+    "micSentence": None, "micTest": None, "micTestPassed": False,
 }
 
 _USERNAME_ADJ = ["swift", "bright", "calm", "keen", "bold", "quiet", "quick", "sharp", "clear", "steady"]
@@ -295,6 +316,12 @@ def create_candidate(**kw):
         "faceMatch": None,
         "faceAttempts": 0,
         "identityBlocked": False,
+        "faceEvents": [],
+        "faceStrikes": 0,
+        "facePending": None,
+        "micSentence": None,
+        "micTest": None,
+        "micTestPassed": False,
     }
     with _lock:
         _state["candidates"].insert(0, c)
@@ -602,6 +629,86 @@ def compare_faces(reference_path, live_path, threshold=None):
 def recognizer_match(engine, feat_a, feat_b):
     import cv2
     return engine[1].match(feat_a, feat_b, cv2.FaceRecognizerSF_FR_COSINE)
+
+
+# The registered photo never changes mid-interview, so its embedding is computed
+# once and reused for every live frame instead of on each check.
+_ref_embeds = {}
+_ref_embeds_lock = threading.Lock()
+
+
+def reference_embedding(photo_file):
+    with _ref_embeds_lock:
+        if photo_file in _ref_embeds:
+            return _ref_embeds[photo_file]
+    engine = face_engine()
+    feat = None
+    if engine:
+        try:
+            feat, _ = face_embedding(engine, os.path.join(PHOTOS, photo_file))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ! reference embedding failed for {photo_file}: {exc}")
+    with _ref_embeds_lock:
+        _ref_embeds[photo_file] = feat
+    return feat
+
+
+def monitor_face(c, frame_path):
+    """Check one live interview frame against the registered candidate.
+
+    Verdicts: ok | no_face | multiple_faces | different_person, plus
+    unmonitored/unavailable when there is nothing to compare against.
+    """
+    app = find_application(c["applicationId"]) if c.get("applicationId") else None
+    if not (app and app.get("photoFile")):
+        return {"verdict": "unmonitored",
+                "detail": "This candidate has no registered photo to monitor against."}
+    engine = face_engine()
+    if not engine:
+        return {"verdict": "unavailable", "detail": "Face matching is unavailable on the server."}
+    ref = reference_embedding(app["photoFile"])
+    if ref is None:
+        return {"verdict": "unavailable",
+                "detail": "No face could be found in the registered application photo."}
+    try:
+        live, faces = face_embedding(engine, frame_path)
+    except Exception as exc:  # noqa: BLE001
+        return {"verdict": "unavailable", "detail": f"The camera frame could not be read ({exc})."}
+    if live is None or faces == 0:
+        return {"verdict": "no_face", "faces": 0,
+                "detail": "The candidate is not visible in the camera."}
+    threshold = float(get_settings().get("faceMatchThreshold") or SFACE_COSINE_THRESHOLD)
+    score = round(float(recognizer_match(engine, ref, live)), 4)
+    if faces > 1:
+        return {"verdict": "multiple_faces", "faces": faces, "score": score,
+                "detail": f"{faces} faces were visible in the camera at the same time."}
+    if score < threshold:
+        return {"verdict": "different_person", "faces": 1, "score": score,
+                "detail": (f"The person on camera does not match the registered candidate "
+                           f"(similarity {score:.3f}, needs {threshold:.3f}).")}
+    return {"verdict": "ok", "faces": 1, "score": score,
+            "detail": "Registered candidate confirmed on camera."}
+
+
+def mic_words(text):
+    return [w for w in re.sub(r"[^a-z0-9\s]", " ", (text or "").lower()).split() if w]
+
+
+def mic_match_ratio(target, heard):
+    """Share of the target sentence's words present in what was heard, counting
+    each word only as often as the sentence itself uses it."""
+    want = mic_words(target)
+    if not want:
+        return 0.0
+    pool = {}
+    for w in mic_words(heard):
+        pool[w] = pool.get(w, 0) + 1
+    hit = 0
+    for w in want:
+        if pool.get(w, 0) > 0:
+            hit += 1
+            pool[w] -= 1
+    return hit / len(want)
 
 
 INTERVIEW_PREP = [
@@ -930,6 +1037,7 @@ def delete_candidate(cid):
         os.path.join(UPLOADS, c["resumeFile"]) if c.get("resumeFile") else None,
         os.path.join(RECORDINGS, c["recording"]) if c.get("recording") else None,
         os.path.join(VERIFICATIONS, c["verificationPhoto"]) if c.get("verificationPhoto") else None,
+        os.path.join(MICTESTS, c["micTest"]["file"]) if (c.get("micTest") or {}).get("file") else None,
     ):
         if path and os.path.exists(path):
             try:
@@ -1787,6 +1895,11 @@ class Handler(BaseHTTPRequestHandler):
                               "faceAttempts": c["faceAttempts"],
                               "identityBlocked": c["identityBlocked"],
                               "maxFaceAttempts": MAX_FACE_ATTEMPTS,
+                              "faceEvents": c["faceEvents"],
+                              "faceStrikes": c["faceStrikes"],
+                              "maxFaceStrikes": MAX_FACE_STRIKES,
+                              "micTest": c["micTest"],
+                              "micTestPassed": c["micTestPassed"],
                               "application": {
                                   "id": app["id"], "name": app["name"], "email": app["email"],
                                   "mobile": app["mobile"], "atsScore": app["atsScore"],
@@ -1842,12 +1955,15 @@ class Handler(BaseHTTPRequestHandler):
             old_photo = c.get("verificationPhoto")
             old_shots = c.get("evidenceShots") or []
             old_recording = c.get("recording")
+            old_mic = (c.get("micTest") or {}).get("file")
             c.update({"status": "invited", "startedAt": None, "finishedAt": None, "slot1DeadlineAt": None,
                       "questions": [], "answers": [], "violations": [], "cursor": 0,
                       "verificationPhoto": None, "evidenceShots": [], "recording": None, "recordingBytes": 0,
                       "report": None,
                       "faceMatch": None, "faceAttempts": 0, "identityBlocked": False,
-                      "aadhaarVerified": False, "aadhaarAttempts": 0})
+                      "aadhaarVerified": False, "aadhaarAttempts": 0,
+                      "faceEvents": [], "faceStrikes": 0, "facePending": None,
+                      "micSentence": None, "micTest": None, "micTestPassed": False})
             save()
             if old_photo:
                 try:
@@ -1864,7 +1980,22 @@ class Handler(BaseHTTPRequestHandler):
                     os.remove(os.path.join(RECORDINGS, old_recording))
                 except OSError:
                     pass
+            if old_mic:
+                try:
+                    os.remove(os.path.join(MICTESTS, old_mic))
+                except OSError:
+                    pass
             return self.json({"ok": True, "candidate": public_view(c)})
+
+        m = re.fullmatch(r"/api/admin/candidates/([0-9a-f]+)/mic-test", path)
+        if m and method == "GET":
+            if not self.require_admin():
+                return
+            c = find_candidate(m.group(1))
+            if not c or not (c.get("micTest") or {}).get("file"):
+                return self.error_json(404, "No microphone recording on file.")
+            return self.send_file(os.path.join(MICTESTS, c["micTest"]["file"]),
+                                  ctype="audio/webm", ranges=True)
 
         m = re.fullmatch(r"/api/admin/candidates/([0-9a-f]+)/face-match", path)
         if m and method == "POST":
@@ -2175,6 +2306,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if action == "state" and method == "GET":
+            if not c["micSentence"]:
+                # Assigned by the server so the transcript can be checked against
+                # the sentence we actually gave them.
+                c["micSentence"] = secrets.choice(MIC_TEST_SENTENCES)
+                save()
             if c["status"] == "in_progress" and in_slot1(c) and slot1_remaining_sec(c) == 0:
                 skip_remaining_slot1(c)
             if c["status"] == "in_progress" and c["cursor"] >= len(c["questions"]):
@@ -2198,6 +2334,11 @@ class Handler(BaseHTTPRequestHandler):
                 "aadhaarVerified": bool(c["aadhaarVerified"]),
                 "faceMatchStatus": (c.get("faceMatch") or {}).get("status"),
                 "identityBlocked": bool(c["identityBlocked"]),
+                "micSentence": c["micSentence"],
+                "micTestPassed": bool(c["micTestPassed"]),
+                "micMatchRequired": MIC_MATCH_REQUIRED,
+                "faceStrikes": c["faceStrikes"],
+                "maxFaceStrikes": MAX_FACE_STRIKES,
             })
 
         if action == "verify-aadhaar" and method == "POST":
@@ -2300,6 +2441,101 @@ class Handler(BaseHTTPRequestHandler):
             save()
             return self.json({"ok": True, "faceMatch": result})
 
+        if action == "face-check" and method == "POST":
+            # Live identity monitoring. The frame is read first so an early reply
+            # never leaves the client writing into an undrained socket.
+            frame = self.body_bytes()
+            if c["status"] != "in_progress":
+                return self.json({"verdict": "inactive"})
+            stored = f"{c['id']}-mon-{new_id(3)}.jpg"
+            path = os.path.join(EVIDENCE, stored)
+            with open(path, "wb") as f:
+                f.write(frame)
+            res = monitor_face(c, path)
+            verdict = res["verdict"]
+
+            if verdict in ("ok", "unmonitored", "unavailable"):
+                try:
+                    os.remove(path)     # nothing worth keeping for a clean frame
+                except OSError:
+                    pass
+                if verdict == "ok":
+                    c["facePending"] = None
+                    save()
+                return self.json(res)
+
+            # A problem must repeat on consecutive checks before it costs a strike.
+            pending = c.get("facePending") or {}
+            seen = (pending.get("count", 0) + 1) if pending.get("verdict") == verdict else 1
+            c["facePending"] = {"verdict": verdict, "count": seen}
+            if seen < FACE_STRIKE_CONFIRMATIONS:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                save()
+                return self.json({**res, "confirming": True, "strike": c["faceStrikes"]})
+
+            c["facePending"] = None
+            c["faceStrikes"] += 1
+            strike = c["faceStrikes"]
+            at_q = c["cursor"] + 1
+            c["evidenceShots"].append({"file": stored, "type": verdict, "at": now_iso(), "atQuestion": at_q})
+            c["faceEvents"].append({
+                "type": verdict, "at": now_iso(), "atQuestion": at_q,
+                "score": res.get("score"), "faces": res.get("faces"),
+                "evidenceFile": stored, "detail": res["detail"], "strike": strike,
+            })
+            c["violations"].append({
+                "type": f"face_{verdict}",
+                "detail": f"{res['detail']} (live monitoring strike {strike} of {MAX_FACE_STRIKES})",
+                "at": now_iso(), "atQuestion": at_q,
+            })
+            terminated = False
+            if CFG["strict_proctor"] and strike >= MAX_FACE_STRIKES:
+                finalise(c, "terminated")
+                terminated = True
+            save()
+            return self.json({**res, "strike": strike, "maxStrikes": MAX_FACE_STRIKES,
+                              "terminated": terminated})
+
+        if action == "mic-test" and method == "POST":
+            body = self.body_bytes()
+            if c["status"] not in ("invited", "in_progress"):
+                return self.error_json(409, "This interview is already closed.")
+            fields, files = parse_multipart(body, self.headers.get("Content-Type", ""))
+            if "audio" not in files:
+                return self.error_json(400, "The voice recording did not reach the server. Try again.")
+            _, audio = files["audio"]
+            if len(audio) < MIN_MIC_RECORDING_BYTES:
+                return self.error_json(400, "The voice recording came through empty. Check that your "
+                                            "microphone is not muted and read the sentence again.")
+            transcript = (fields.get("transcript") or "").strip()
+            sentence = c["micSentence"] or ""
+            ratio = mic_match_ratio(sentence, transcript)
+            if ratio < MIC_MATCH_REQUIRED:
+                want = len(mic_words(sentence))
+                return self.error_json(400, f"Only {round(ratio * want)} of {want} words from the "
+                                            "sentence were recognised. Please read the whole sentence "
+                                            "aloud, clearly.")
+            stored = f"{c['id']}-mic-{new_id(3)}.webm"
+            with open(os.path.join(MICTESTS, stored), "wb") as f:
+                f.write(audio)
+            old = (c.get("micTest") or {}).get("file")
+            c["micTest"] = {
+                "file": stored, "bytes": len(audio), "sentence": sentence,
+                "transcript": transcript[:2000], "matchRatio": round(ratio, 3),
+                "capturedAt": now_iso(),
+            }
+            c["micTestPassed"] = True
+            save()
+            if old and old != stored:
+                try:
+                    os.remove(os.path.join(MICTESTS, old))
+                except OSError:
+                    pass
+            return self.json({"ok": True, "micTest": c["micTest"]})
+
         if action == "evidence" and method == "POST":
             if c["status"] != "in_progress":
                 return self.json({"ok": True})
@@ -2314,14 +2550,19 @@ class Handler(BaseHTTPRequestHandler):
         if action == "start" and method == "POST":
             if c["status"] in ("completed", "terminated"):
                 return self.error_json(409, "This interview is already closed.")
-            if not c["verificationPhoto"]:
-                return self.error_json(400, "Identity verification photo is required before the interview can start.")
+            # All three gates - Aadhaar identity, face match, microphone - have to
+            # be satisfied here on the server, not just in the page.
             if aadhaar_source(c) and not c["aadhaarVerified"]:
                 return self.error_json(400, "Your Aadhaar number must be verified before the interview can start.")
-            if (c.get("faceMatch") or {}).get("status") == "failed":
+            if not c["verificationPhoto"]:
+                return self.error_json(400, "Identity verification photo is required before the interview can start.")
+            if c["identityBlocked"] or (c.get("faceMatch") or {}).get("status") == "failed":
                 return self.error_json(403, "Identity verification failed: the interview photo does not "
                                             "match the photo on your application. The interview cannot "
                                             "start. Contact the hiring team.")
+            if not c["micTestPassed"]:
+                return self.error_json(400, "The microphone check is not complete. Read the given sentence "
+                                            "aloud and let the recording finish before starting.")
             if c["status"] == "invited":
                 # An attempt already under way is never cut off mid-interview; only a
                 # fresh start has to fall inside the link's validity window.
